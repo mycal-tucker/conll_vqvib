@@ -544,9 +544,15 @@ def get_super_loss(supervised_data, speaker):
 
 def train(model, train_data, val_data, viz_data, glove_data, vae, savepath, comm_dim, fieldname, num_epochs=3000, batch_size=1024,
           burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
-    unique_topnames, _ = get_unique_labels(train_data)
-    sup_dataset = pd.concat([get_entry_for_labels(train_data, unique_topnames) for _ in range(3)])
-    sup_dataset = sup_dataset.sample(frac=1).reset_index(drop=True)  # Shuffle the data.
+    
+    # we don't care about this: we take the entire dataset
+    #unique_topnames, _ = get_unique_labels(train_data)
+    #sup_dataset = pd.concat([get_entry_for_labels(train_data, unique_topnames) for _ in range(3)])
+    #sup_dataset = sup_dataset.sample(frac=1).reset_index(drop=True)  # Shuffle the data.
+    
+    sup_dataset = train_data.sample(frac=1).reset_index(drop=True)  # Shuffle the data.
+    
+    ####### HERE: to understand get_supervised_data, we need gen_batch
     supervised_data = get_supervised_data(sup_dataset, 2, glove_data, vae)
 
     criterion = nn.CrossEntropyLoss()

@@ -18,7 +18,9 @@ from src.data_utils.helper_fns import get_unique_labels
 
 
 # %% ---- FUNCTION TO LOAD MANYNAMES.TSV
-def load_cleaned_results(filename="../manynames.tsv", sep="\t",
+
+# ok
+def load_cleaned_results(filename="../data/manynames.tsv", sep="\t",
                          index_col=None):
     # read tsv
     resdf = pd.read_csv(filename, sep=sep, index_col=index_col)
@@ -34,6 +36,9 @@ def load_cleaned_results(filename="../manynames.tsv", sep="\t",
     for icol in evcols:
         if icol in resdf:
             resdf[icol] = resdf[icol].apply(lambda x: eval(x))
+            
+    resdf['vg_image_id'] = [str(i) for i in resdf['vg_image_id']] # added otherwise it won't work with get_feature_data
+    
     return resdf
 
 
@@ -119,15 +124,16 @@ def img_features(id_to_url):
             f.write('\n')
 
 
+#ok --> selects images based on the desired names
 def get_feature_data(filename, desired_names=[], excluded_names=[], selected_fraction=None, max_per_class=None):
     # Merge the feature data with the dataset data.
-    manynames = load_cleaned_results(filename='data/manynames.tsv')
+    manynames = load_cleaned_results(filename='../data/manynames.tsv')
     data_rows = []
-    with open(filename, 'r') as f:
+    with open("../data/manynames.tsv", 'r') as f:
         for line in f:
-            list_data = eval(line)
-            data_rows.append((list_data[0], list_data[1:]))
-    feature_df = pd.DataFrame(data_rows, columns=['vg_image_id', 'features'])
+            list_data = line.split('\t') # removing eval that gives problem and adding -split
+            data_rows.append((list_data[1], list_data[2:]))
+    feature_df = pd.DataFrame(data_rows[1:], columns=['vg_image_id', 'features']) # adding [1:] to skip first empy line
     merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
     if len(desired_names) == 0 and len(excluded_names) == 0 and selected_fraction is None:
         return merged_df
@@ -170,6 +176,19 @@ def get_feature_data(filename, desired_names=[], excluded_names=[], selected_fra
                 selected_names.add(name)
         merged_df = merged_df[merged_df['topname'].isin(selected_names)]
     merged_df.reset_index(inplace=True)
+    
+    # open detections if there is file
+    try: 
+        detdf = pd.read_csv('../data/manynames_detections.tsv', sep='\t')
+        detdf['detected_xyxy'] = detdf['detected_xyxy'].apply(lambda x: eval(x))
+        del detdf['tar_xywh'] 
+        del detdf['classes']
+        del detdf['scores'] 
+        # add detections column	
+        merged_df = merged_df.merge(detdf, left_on='link_vg', right_on='link_vg')
+    except:
+        merged_df = merged_df # is we are not in seetting "see_distractors".
+        print("You are not using the detections file: make sure you don't want the sender to see distractors in the scene")
     # Count the number of unique words used to describe items in the dataset
     unique_responses = set()
     unique_topwords = set()
@@ -183,6 +202,7 @@ def get_feature_data(filename, desired_names=[], excluded_names=[], selected_fra
     return merged_df
 
 
+# ok --> loads glova embeddings
 def get_glove_vectors(comm_dim):
     raw_data = pd.read_table('data/glove.6B.100d.txt', sep=" ", index_col=0, header=None, quoting=csv.QUOTE_NONE)
     if comm_dim > 100:

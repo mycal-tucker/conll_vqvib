@@ -70,6 +70,7 @@ def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_di
     return speaker_tensor, listener_tensor, label_tensor, embeddings
 
 
+# ok -> set function over names
 def get_unique_labels(dataset):
     unique_topnames = get_unique_by_field(dataset, 'topname')
     unique_responses = set()
@@ -86,6 +87,7 @@ def get_unique_by_field(dataset, fieldname):
     return uniques
 
 
+# ok -> gets n images per name: we don't care about this now
 def get_entry_for_labels(dataset, labels, fieldname='topname', num_repeats=1):
     rows = []
     for _ in range(num_repeats):
@@ -97,6 +99,7 @@ def get_entry_for_labels(dataset, labels, fieldname='topname', num_repeats=1):
     return big_data
 
 
+# ok -> gets random raws from dataset
 def get_rand_entries(dataset, num_entries):
     big_data = dataset.sample(n=num_entries)
     return big_data
