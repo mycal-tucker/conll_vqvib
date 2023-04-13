@@ -40,9 +40,7 @@ def load_cleaned_results(filename="src/data/manynames.tsv", sep="\t",
     for icol in evcols:
         if icol in resdf:
             resdf[icol] = resdf[icol].apply(lambda x: eval(x))
-            
-    resdf['vg_image_id'] = [i for i in resdf['vg_image_id']]
-    
+                
     return resdf
 
 
@@ -195,7 +193,8 @@ def save_input_representations(filename='src/data/manynames.tsv', filename_detec
     Extracts and saves visual features for targets, distractors, and context. 
     """
     
-    manynames = load_cleaned_results(filename) 
+    manynames = load_cleaned_results(filename)
+    manynames['vg_image_id'] = [str(i) for i in manynames['vg_image_id']]
     detdf = pd.read_csv(filename_detections, sep='\t') 
     detdf['detected_xyxy'] = detdf['detected_xyxy'].apply(lambda x: eval(x))
     detdf['classes'] = detdf['classes'].apply(lambda x: eval(x))
