@@ -18,11 +18,13 @@ import torchvision.models as models
 from PIL import Image
 from sklearn.decomposition import PCA
 from src.data_utils.helper_fns import get_unique_labels
+from src.data_utils.helper_fns import intersection_over_union
+
 
 
 # %% ---- FUNCTION TO LOAD MANYNAMES.TSV
 
-def load_cleaned_results(filename="data/manynames.tsv", sep="\t",
+def load_cleaned_results(filename="src/data/manynames.tsv", sep="\t",
                          index_col=None):
     # read tsv
     resdf = pd.read_csv(filename, sep=sep, index_col=index_col)
@@ -82,21 +84,8 @@ def download_img():
     return id_to_url
 
 
-def intersection_over_union(boxA, boxB):
-    # needs boxes of format [x1, x2, y1, y2]
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
-    interArea = max(0, xB - xA + 1) * max(0, yB - yA + 1)
-    boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)
-    boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
-    iou = interArea / float(boxAArea + boxBArea - interArea)
-    return iou
-
-
 def rank_distractors(target_features, tar_xyxy, target_size, 
-                     img_id, image_size, detections, 
+                     img_id, image_size, detections, classes, 
                      threshold_iou, threshold_size):
     """
     Ranks distractors based on size and IoU
@@ -105,22 +94,34 @@ def rank_distractors(target_features, tar_xyxy, target_size,
     """
     # store candidate distractors, based on thresholds
     candidates = []
-    for d_xyxy in detections:
+    for d_xyxy, d_class in zip(detections, classes):
         d_w = d_xyxy[2]-d_xyxy[0]
         d_h = d_xyxy[3]-d_xyxy[1]
         dist_size = d_w * d_h
         iou = intersection_over_union(tar_xyxy, d_xyxy)
         if iou <= threshold_iou and dist_size/image_size > threshold_size:
-            candidates.append(d_xyxy)
+            candidates.append([d_xyxy, d_class])
     # choose distractor based on similarity
     similarities = []
-    if len(candidates) > 0:
-        for d_xyxy in candidates:
+    if len(candidates) <= 1: # if there is only 1 detection, we won't have X_ctx
+        dist_xyxy, dist_class, distractor_features, ctx_objects = "not found", "not found", "not found", "not found"
+    else: # at least one candidate has been detected
+        for d_xyxy, d_class in candidates:
             distractor_features, _ = obj_features(img_id, d_xyxy)
             similarities.append([1-spatial.distance.cosine(distractor_features, 
-                                target_features), d_xyxy, distractor_features])
+                                target_features), d_xyxy, distractor_features, d_class])
     competitors = sorted(similarities, key=itemgetter(0), reverse=True)
-    return competitors[0][1], competitors[0][2], [j[1] for j in competitors[1:]]
+    # checking iou between distractor and other detections
+    context_objects = []
+    for c_obj in competitors[1:]:
+        if intersection_over_union(c_obj[1], competitors[0][1]) <= threshold_iou:
+            context_objects.append(c_obj)
+    if len(context_objects) >= 1:
+        dist_xyxy, dist_class, distractor_features, ctx_objects = competitors[0][1], competitors[0][3], competitors[0][2], [j[1] for j in context_objects]
+    else:
+        dist_xyxy, dist_class, distractor_features, ctx_objects = "not found", "not found", "not found", "not found"
+    
+    return dist_xyxy, dist_class, distractor_features, ctx_objects
 
 
 def img_features_from_id(img_id):
@@ -154,7 +155,7 @@ def img_features_from_id(img_id):
     all_features = feature_extractor(img_tensor)
     features = all_features[0, :, 0, 0]
     
-    return features, pil_image.size  
+    return features, pil_image.size[0]*pil_image.size[1]  
  
    
 def obj_features(img_id, bbox_xyxy):
@@ -186,25 +187,26 @@ def obj_features(img_id, bbox_xyxy):
     all_features = feature_extractor(img_tensor)
     features = all_features[0, :, 0, 0]
     
-    return features, cropped.size 
+    return features, cropped.size[0]*cropped.size[1] 
     
     
-def save_input_representations(filename='data/manynames.tsv', filename_detections='data/manynames_detections.tsv'):
+def save_input_representations(filename='src/data/manynames.tsv', filename_detections='src/data/manynames_detections.tsv'):
     """
     Extracts and saves visual features for targets, distractors, and context. 
     """
     
     manynames = load_cleaned_results(filename) 
-    detdf = pd.read_csv('data/manynames_detections.tsv', sep='\t') 
+    detdf = pd.read_csv(filename_detections, sep='\t') 
     detdf['detected_xyxy'] = detdf['detected_xyxy'].apply(lambda x: eval(x))
+    detdf['classes'] = detdf['classes'].apply(lambda x: eval(x))
     del detdf['tar_xywh'] 
-    del detdf['classes']
     del detdf['scores'] 
     # merge MN with detections	
     merged_df = manynames.merge(detdf, left_on='link_vg', right_on='link_vg')
-    for img_id, tar_xywh, detections in zip(merged_df['vg_image_id'], 
+    for img_id, tar_xywh, detections, classes in zip(merged_df['vg_image_id'], 
                                             merged_df['bbox_xywh'],
-                                            merged_df['detected_xyxy']):
+                                            merged_df['detected_xyxy'],
+                                            merged_df['classes']):
         img_name = image_directory + str(img_id) + suffix
         image_features, image_size = img_features_from_id(img_id)
         tar_x1 = tar_xywh[0]
@@ -213,35 +215,43 @@ def save_input_representations(filename='data/manynames.tsv', filename_detection
         tar_y2 = tar_xywh[1] + tar_xywh[3]
         tar_xyxy = [tar_x1, tar_y1, tar_x2, tar_y2]
         target_features, target_size = obj_features(img_id, tar_xyxy)        
-        dist_xyxy, distractor_features, ctx_objects = rank_distractors(target_features, 
+        dist_xyxy, dist_class, distractor_features, ctx_objects = rank_distractors(target_features, 
                                                     tar_xyxy, target_size, 
-                                                    img_id, image_size, detections, 
+                                                    img_id, image_size, detections, classes,
                                                     threshold_iou, threshold_size)   
-        # save target features
-        with open(t_features_filename, 'a') as f:
-            f.write(img_name.split('.')[0] + ', ')
-            f.write(', '.join([str(e) for e in target_features.cpu().detach().numpy()]))
-            f.write('\n')     
-        # save distractor features
-        with open(d_features_filename, 'a') as f:
-            f.write(img_name.split('.')[0] + ', ')
-            f.write(', '.join([str(e) for e in distractor_features.cpu().detach().numpy()]))
-            f.write('\n')
-        # save context features
-        ctx_feature_list = []
-        for ctx_obj_xyxy in ctx_objects:
-            ctx_obj_features, _ = obj_features(img_id, ctx_obj_xyxy)
-            # normalize features before computing average
-            norm_feat = F.normalize(ctx_obj_features, p=2, dim=0)
-            ctx_feature_list.append(norm_feat)
-        # the image context repreentation is the average
-        ctx_features = sum(ctx_feature_list) / len(ctx_feature_list)
-        with open(ctx_features_filename, 'a') as f:
-            f.write(img_name.split('.')[0] + ', ')
-            f.write(', '.join([str(e) for e in ctx_features.cpu().detach().numpy()]))
-            f.write('\n')
+        if dist_xyxy != "not found":
+            # save target features
+            with open(t_features_filename, 'a') as f:
+                f.write(img_name.split('.')[0] + suffix + ', ')
+                f.write(', '.join([str(e) for e in target_features.cpu().detach().numpy()]))
+                f.write('\n')     
+            # save distractor features
+            with open(d_features_filename, 'a') as f:
+                f.write(img_name.split('.')[0] + suffix + ', ')
+                f.write(', '.join([str(e) for e in distractor_features.cpu().detach().numpy()]))
+                f.write('\n')
+           # save distractor bboxes
+            with open(d_bboxes_filename, 'a') as f:
+                f.write(img_name.split('.')[0] + suffix + '\t')
+                f.write(str(tar_xywh) + '\t')
+                f.write(str(dist_class) + '\t')
+                f.write(str(dist_xyxy)+ '\t')
+                f.write('\n') 
+            # save context features
+            ctx_feature_list = []
+            for ctx_obj_xyxy in ctx_objects:
+                ctx_obj_features, _ = obj_features(img_id, ctx_obj_xyxy)
+                # normalize features before computing average
+                norm_feat = F.normalize(ctx_obj_features, p=2, dim=0)
+                ctx_feature_list.append(norm_feat)
+            # the image context representation is the average
+            ctx_features = sum(ctx_feature_list) / len(ctx_feature_list)
+            with open(ctx_features_filename, 'a') as f:
+                f.write(img_name.split('.')[0] + suffix + ', ')
+                f.write(', '.join([str(e) for e in ctx_features.cpu().detach().numpy()]))
+                f.write('\n')
+ 
 
-        
 def img_features(id_to_url):
     # Get a pretrained model
     feature_extractor = models.resnet18(pretrained=True)
@@ -280,19 +290,21 @@ def img_features(id_to_url):
         img_tensor = torch.unsqueeze(img_tensor, 0)  # Batch size 1
         all_features = feature_extractor(img_tensor)
         features = all_features[0, :, 0, 0]
-    
-    return features
+        with open(features_filename, 'a') as f:
+            f.write(img.split('.')[0] + ', ')
+            f.write(', '.join([str(e) for e in features.cpu().detach().numpy()]))
+            f.write('\n')
 
 
-def get_feature_data(filename_features, desired_names=[], excluded_names=[], selected_fraction=None, max_per_class=None):
+def get_feature_data(filename, desired_names=[], excluded_names=[], selected_fraction=None, max_per_class=None):
     # Merge the feature data with the dataset data.
     manynames = load_cleaned_results(filename='data/manynames.tsv')
     data_rows = []
-    with open(filename_features, 'r') as f:
+    with open(filename, 'r') as f:
         for line in f:
             list_data = eval(line)
             data_rows.append((list_data[0], list_data[1:]))
-    feature_df = pd.DataFrame(data_rows[1:], columns=['vg_image_id', 'features']) # adding [1:] to skip first empy line
+    feature_df = pd.DataFrame(data_rows, columns=['vg_image_id', 'features'])
     merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
     if len(desired_names) == 0 and len(excluded_names) == 0 and selected_fraction is None:
         return merged_df
@@ -335,7 +347,6 @@ def get_feature_data(filename_features, desired_names=[], excluded_names=[], sel
                 selected_names.add(name)
         merged_df = merged_df[merged_df['topname'].isin(selected_names)]
     merged_df.reset_index(inplace=True)
-    
     # Count the number of unique words used to describe items in the dataset
     unique_responses = set()
     unique_topwords = set()
@@ -363,25 +374,28 @@ def get_glove_vectors(comm_dim):
 # %% ---- DIRECTLY RUN
 if __name__ == "__main__":
     with_bbox = False
-    see_distractors = True
-    image_directory = 'data/images/' if with_bbox else 'data/images_nobox/'
+    see_distractors = False
+    see_distractors_pragmatics = True
+    image_directory = 'src/data/images/' if with_bbox else 'src/data/images_nobox/'
     url_fieldname = 'link_mn' if with_bbox else 'link_vg'
     suffix = '.png' if with_bbox else '.jpg'
-    t_features_filename = 'data/t_features.csv' if with_bbox else 'data/features_nobox.csv'
-    d_features_filename = 'data/d_features.csv'
-    ctx_features_filename = 'data/ctx_features.csv'
+    features_filename = 'src/data/features.csv' if with_bbox else 'src/data/features_nobox.csv'
     if len(sys.argv) > 1:
         fn = sys.argv[1]
     else:
-        fn = "data/manynames.tsv"
+        fn = "src/data/manynames.tsv"
     print("Loading data from", fn)
     manynames = load_cleaned_results(filename=fn)
     print(manynames.head())
     print(len(manynames))
-    if see_distractors: # EG setup
+    if see_distractors_pragmatics: # EG setup
         threshold_iou=0.1
         threshold_size=0.01
-        url_map = download_img()
+        t_features_filename = 'src/data/t_features.csv'
+        d_features_filename = 'src/data/d_features.csv'
+        d_bboxes_filename = 'src/data/d_xyxy.tsv'
+        ctx_features_filename = 'src/data/ctx_features.csv'
+        url_map = download_img()  uncomment if need to download images!
         save_input_representations()
     else: # Mycal's setup
         url_map = download_img()
