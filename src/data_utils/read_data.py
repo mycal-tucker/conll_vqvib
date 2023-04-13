@@ -41,7 +41,7 @@ def load_cleaned_results(filename="src/data/manynames.tsv", sep="\t",
         if icol in resdf:
             resdf[icol] = resdf[icol].apply(lambda x: eval(x))
             
-    resdf['vg_image_id'] = [str(i) for i in resdf['vg_image_id']] # added otherwise it won't work with get_feature_data
+    resdf['vg_image_id'] = [i for i in resdf['vg_image_id']]
     
     return resdf
 
@@ -395,7 +395,7 @@ if __name__ == "__main__":
         d_features_filename = 'src/data/d_features.csv'
         d_bboxes_filename = 'src/data/d_xyxy.tsv'
         ctx_features_filename = 'src/data/ctx_features.csv'
-        url_map = download_img()  uncomment if need to download images!
+        #url_map = download_img()  uncomment if need to download images!
         save_input_representations()
     else: # Mycal's setup
         url_map = download_img()
