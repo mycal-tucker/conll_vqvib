@@ -146,11 +146,12 @@ def img_features_from_id(img_id):
     array_version = np.array(pil_image)
     if array_version.shape[-1] != 3:
         pass
-    input_tensor = preprocess(pil_image)
-    img_tensor = input_tensor
-    img_tensor = torch.unsqueeze(img_tensor, 0)  # Batch size 1
-    all_features = feature_extractor(img_tensor)
-    features = all_features[0, :, 0, 0]
+    else:
+        input_tensor = preprocess(pil_image)
+        img_tensor = input_tensor
+        img_tensor = torch.unsqueeze(img_tensor, 0)  # Batch size 1
+        all_features = feature_extractor(img_tensor)
+        features = all_features[0, :, 0, 0]
     
     return features, pil_image.size[0]*pil_image.size[1]  
  
@@ -180,13 +181,14 @@ def obj_features(img_id, bbox_xyxy):
     array_version = np.array(pil_image)
     if array_version.shape[-1] != 3:
         pass
-    cropped = pil_image.crop((bbox_xyxy[0], bbox_xyxy[1], bbox_xyxy[2], bbox_xyxy[3]))
-    input_tensor = preprocess(cropped)
-    img_tensor = input_tensor
-    img_tensor = torch.unsqueeze(img_tensor, 0)  # Batch size 1
-    all_features = feature_extractor(img_tensor)
-    features = all_features[0, :, 0, 0]
-    
+    else:
+        cropped = pil_image.crop((bbox_xyxy[0], bbox_xyxy[1], bbox_xyxy[2], bbox_xyxy[3]))
+        input_tensor = preprocess(cropped)
+        img_tensor = input_tensor
+        img_tensor = torch.unsqueeze(img_tensor, 0)  # Batch size 1
+        all_features = feature_extractor(img_tensor)
+        features = all_features[0, :, 0, 0]
+        
     return features, cropped.size[0]*cropped.size[1] 
     
     
@@ -209,48 +211,51 @@ def save_input_representations(filename='src/data/manynames.tsv', filename_detec
                                             merged_df['detected_xyxy'],
                                             merged_df['classes']):
         img_name = image_directory + str(img_id) + suffix
-        image_features, image_size = img_features_from_id(img_id)
-        tar_x1 = tar_xywh[0]
-        tar_y1 = tar_xywh[1]
-        tar_x2 = tar_xywh[0] + tar_xywh[2]
-        tar_y2 = tar_xywh[1] + tar_xywh[3]
-        tar_xyxy = [tar_x1, tar_y1, tar_x2, tar_y2]
-        target_features, target_size = obj_features(img_id, tar_xyxy)        
-        dist_xyxy, dist_class, distractor_features, ctx_objects = rank_distractors(target_features, 
-                                                    tar_xyxy, target_size, 
-                                                    img_id, image_size, detections, classes,
-                                                    threshold_iou, threshold_size)   
-        if dist_xyxy != "not found":
-            # save target features
-            with open(t_features_filename, 'a') as f:
-                f.write(img_name.split('.')[0] + suffix + ', ')
-                f.write(', '.join([str(e) for e in target_features.cpu().detach().numpy()]))
-                f.write('\n')     
-            # save distractor features
-            with open(d_features_filename, 'a') as f:
-                f.write(img_name.split('.')[0] + suffix + ', ')
-                f.write(', '.join([str(e) for e in distractor_features.cpu().detach().numpy()]))
-                f.write('\n')
-           # save distractor bboxes
-            with open(d_bboxes_filename, 'a') as f:
-                f.write(img_name.split('.')[0] + suffix + '\t')
-                f.write(str(tar_xywh) + '\t')
-                f.write(str(dist_class) + '\t')
-                f.write(str(dist_xyxy)+ '\t')
-                f.write('\n') 
-            # save context features
-            ctx_feature_list = []
-            for ctx_obj_xyxy in ctx_objects:
-                ctx_obj_features, _ = obj_features(img_id, ctx_obj_xyxy)
-                # normalize features before computing average
-                norm_feat = F.normalize(ctx_obj_features, p=2, dim=0)
-                ctx_feature_list.append(norm_feat)
-            # the image context representation is the average
-            ctx_features = sum(ctx_feature_list) / len(ctx_feature_list)
-            with open(ctx_features_filename, 'a') as f:
-                f.write(img_name.split('.')[0] + suffix + ', ')
-                f.write(', '.join([str(e) for e in ctx_features.cpu().detach().numpy()]))
-                f.write('\n')
+        try:
+            image_features, image_size = img_features_from_id(img_id)
+            tar_x1 = tar_xywh[0]
+            tar_y1 = tar_xywh[1]
+            tar_x2 = tar_xywh[0] + tar_xywh[2]
+            tar_y2 = tar_xywh[1] + tar_xywh[3]
+            tar_xyxy = [tar_x1, tar_y1, tar_x2, tar_y2]
+            target_features, target_size = obj_features(img_id, tar_xyxy)        
+            dist_xyxy, dist_class, distractor_features, ctx_objects = rank_distractors(target_features, 
+                                                        tar_xyxy, target_size, 
+                                                        img_id, image_size, detections, classes,
+                                                        threshold_iou, threshold_size)   
+            if dist_xyxy != "not found":
+                # save target features
+                with open(t_features_filename, 'a') as f:
+                    f.write(img_name.split('.')[0] + suffix + ', ')
+                    f.write(', '.join([str(e) for e in target_features.cpu().detach().numpy()]))
+                    f.write('\n')     
+                # save distractor features
+                with open(d_features_filename, 'a') as f:
+                    f.write(img_name.split('.')[0] + suffix + ', ')
+                    f.write(', '.join([str(e) for e in distractor_features.cpu().detach().numpy()]))
+                    f.write('\n')
+                # save distractor bboxes
+                with open(d_bboxes_filename, 'a') as f:
+                    f.write(img_name.split('.')[0] + suffix + '\t')
+                    f.write(str(tar_xywh) + '\t')
+                    f.write(str(dist_class) + '\t')
+                    f.write(str(dist_xyxy)+ '\t')
+                    f.write('\n') 
+                # save context features
+                ctx_feature_list = []
+                for ctx_obj_xyxy in ctx_objects:
+                    ctx_obj_features, _ = obj_features(img_id, ctx_obj_xyxy)
+                    # normalize features before computing average
+                    norm_feat = F.normalize(ctx_obj_features, p=2, dim=0)
+                    ctx_feature_list.append(norm_feat)
+                # the image context representation is the average
+                ctx_features = sum(ctx_feature_list) / len(ctx_feature_list)
+                with open(ctx_features_filename, 'a') as f:
+                    f.write(img_name.split('.')[0] + suffix + ', ')
+                    f.write(', '.join([str(e) for e in ctx_features.cpu().detach().numpy()]))
+                    f.write('\n')
+        except UnboundLocalError: # if we have skipped the image because wrong array shape
+            pass
  
 
 def img_features(id_to_url):
