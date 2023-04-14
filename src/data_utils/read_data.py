@@ -40,7 +40,7 @@ def load_cleaned_results(filename="src/data/manynames.tsv", sep="\t",
     for icol in evcols:
         if icol in resdf:
             resdf[icol] = resdf[icol].apply(lambda x: eval(x))
-                
+            
     return resdf
 
 
@@ -143,10 +143,9 @@ def img_features_from_id(img_id):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     pil_image = Image.open(image_directory + img_id + suffix)
-    #array_version = np.array(pil_image)
-    #if array_version.shape[-1] != 3:
-    #    print("Skipping")
-    #    continue
+    array_version = np.array(pil_image)
+    if array_version.shape[-1] != 3:
+        pass
     input_tensor = preprocess(pil_image)
     img_tensor = input_tensor
     img_tensor = torch.unsqueeze(img_tensor, 0)  # Batch size 1
@@ -178,6 +177,9 @@ def obj_features(img_id, bbox_xyxy):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
     pil_image = Image.open(image_directory + img_id + suffix)
+    array_version = np.array(pil_image)
+    if array_version.shape[-1] != 3:
+        pass
     cropped = pil_image.crop((bbox_xyxy[0], bbox_xyxy[1], bbox_xyxy[2], bbox_xyxy[3]))
     input_tensor = preprocess(cropped)
     img_tensor = input_tensor
@@ -394,7 +396,7 @@ if __name__ == "__main__":
         d_features_filename = 'src/data/d_features.csv'
         d_bboxes_filename = 'src/data/d_xyxy.tsv'
         ctx_features_filename = 'src/data/ctx_features.csv'
-        url_map = download_img()  # uncomment if no need to download images!
+       # url_map = download_img()  uncomment if need to download images!
         save_input_representations()
     else: # Mycal's setup
         url_map = download_img()
