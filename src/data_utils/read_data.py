@@ -17,6 +17,7 @@ import torch.nn.functional as F
 import torchvision.models as models
 from PIL import Image
 from sklearn.decomposition import PCA
+
 from src.data_utils.helper_fns import get_unique_labels
 from src.data_utils.helper_fns import intersection_over_union
 
@@ -302,16 +303,42 @@ def img_features(id_to_url):
             f.write('\n')
 
 
-def get_feature_data(filename, desired_names=[], excluded_names=[], selected_fraction=None, max_per_class=None):
+def get_feature_data(features_filename,
+                     desired_names=[], excluded_names=[], 
+                     selected_fraction=None, max_per_class=None):
     # Merge the feature data with the dataset data.
-    manynames = load_cleaned_results(filename='data/manynames.tsv')
-    data_rows = []
-    with open(filename, 'r') as f:
+    manynames = load_cleaned_results(filename='src/data/manynames.tsv')
+    manynames['vg_image_id'] = [str(i) for i in manynames['vg_image_id']]
+    if see_distractors_pragmatics == True:
+        data_rows = []
+        f =  open(features_filename).read().split('\n')
         for line in f:
-            list_data = eval(line)
+            list_data = line.split(',')
             data_rows.append((list_data[0], list_data[1:]))
-    feature_df = pd.DataFrame(data_rows, columns=['vg_image_id', 'features'])
-    merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
+        feature_df = pd.DataFrame(data_rows, columns=['image_dir', 't_features'])
+        data_rows = []
+        f =  open(d_features_filename).read().split('\n')
+        for line in f:
+            list_data = line.split(',')
+            data_rows.append((list_data[0], list_data[1:]))
+        feature_df['d_features'] = [i[1] for i in data_rows]
+        data_rows = []
+        f =  open(ctx_features_filename).read().split('\n')
+        for line in f:
+            list_data = line.split(',')
+            data_rows.append((list_data[0], list_data[1:]))
+        feature_df['ctx_features'] = [i[1] for i in data_rows]
+        feature_df['vg_image_id'] = [i.split('.')[0].split('/')[-1] for i in feature_df['image_dir']]
+        merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
+    else:
+        data_rows = []
+        with open(features_filename, 'r') as f:
+            for line in f:
+                list_data = eval(line)
+                data_rows.append((list_data[0], list_data[1:]))
+        feature_df = pd.DataFrame(data_rows, columns=['vg_image_id', 'features'])
+        merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
+       
     if len(desired_names) == 0 and len(excluded_names) == 0 and selected_fraction is None:
         return merged_df
     assert len(desired_names) == 0 or len(excluded_names) == 0, "Can't specify both include and exclude"
@@ -345,7 +372,7 @@ def get_feature_data(filename, desired_names=[], excluded_names=[], selected_fra
         print("Filtered by all responses: discarding", num_discarded, "and keeping", len(indices_to_keep))
         merged_df = merged_df.iloc[indices_to_keep]
     else:
-        # Only keep a random subset of the topnames.
+        # To keep subset of the topnames.
         unique_topnames, _ = get_unique_labels(merged_df)
         selected_names = set()
         for name in sorted(unique_topnames):  # Sorting is important for reproducibility.
@@ -363,7 +390,9 @@ def get_feature_data(filename, desired_names=[], excluded_names=[], selected_fra
     print("Num unique topwords:\t", len(unique_topwords))
     print("Num unique response words:\t", len(unique_responses))
     print("Overall dataset size:\t", len(merged_df))
-    return merged_df
+    
+    merged_df.to_csv('src/data/merged_df.csv')
+    #return merged_df
 
 
 def get_glove_vectors(comm_dim):
@@ -385,7 +414,6 @@ if __name__ == "__main__":
     image_directory = 'src/data/images/' if with_bbox else 'src/data/images_nobox/'
     url_fieldname = 'link_mn' if with_bbox else 'link_vg'
     suffix = '.png' if with_bbox else '.jpg'
-    features_filename = 'src/data/features.csv' if with_bbox else 'src/data/features_nobox.csv'
     if len(sys.argv) > 1:
         fn = sys.argv[1]
     else:
@@ -401,8 +429,9 @@ if __name__ == "__main__":
         d_features_filename = 'src/data/d_features.csv'
         d_bboxes_filename = 'src/data/d_xyxy.tsv'
         ctx_features_filename = 'src/data/ctx_features.csv'
-       # url_map = download_img()  uncomment if need to download images!
-        save_input_representations()
+        #url_map = download_img()  # uncomment if need to download images!
+        save_input_representations()   
     else: # Mycal's setup
+        features_filename = 'src/data/features.csv' if with_bbox else 'src/data/features_nobox.csv'
         url_map = download_img()
         img_features(url_map)
