@@ -9,6 +9,7 @@ from torchvision import transforms
 
 import numpy as np
 import pandas as pd
+import random
 import requests
 from scipy import spatial
 import torch
@@ -303,6 +304,45 @@ def img_features(id_to_url):
             f.write('\n')
 
 
+def control_tar_dist_size(dataframe):
+    """
+    Returns dataframe where 50% of the times the target is bigger than the distractor 
+    """
+    dist_w, dist_h = [], []
+    for i in dataframe['dist_xyxy']:
+        i = eval(i)
+        dist_w.append(i[2]-i[0])
+        dist_h.append(i[3]-i[1])
+    dist_sizes = []
+    for w, h in zip(dist_w, dist_h):
+        dist_sizes.append(w*h)
+    tar_w, tar_h = [], []
+    for i in dataframe['bbox_xywh']:
+        tar_w.append(i[2])
+        tar_h.append(i[3])
+    tar_sizes = []
+    for w, h in zip(tar_w, tar_h):
+        tar_sizes.append(w*h)
+    t_bigger = []
+    d_bigger = []
+    for id_, t, d in zip([i for i in dataframe['vg_image_id']], tar_sizes, dist_sizes):
+        if t >= d:
+            t_bigger.append(id_)
+        else:
+            d_bigger.append(id_)
+    half = round(len(dataframe) / 2)
+    longer_list = t_bigger if len(t_bigger) >= len(d_bigger) else d_bigger
+    shorter_list = t_bigger if len(t_bigger) < len(d_bigger) else d_bigger
+    sampled = random.sample(longer_list, half) # we sample 50% of the ids from t_bigger
+    to_swap = [i for i in longer_list if i not in sampled]
+    dataframe.loc[dataframe['vg_image_id'].isin(to_swap), ['t_features', 'd_features']] = (dataframe.loc[dataframe['vg_image_id'].isin(to_swap), ['d_features', 't_features']].values)
+    dataframe['swapped_t_d'] = np.where(dataframe['vg_image_id'].isin(to_swap), 1, 0)
+    print("Swapped target and distractor in", len(to_swap), "cases")
+
+    return dataframe
+
+
+
 def get_feature_data(features_filename,
                      desired_names=[], excluded_names=[], 
                      excluded_ids=[],
@@ -316,21 +356,31 @@ def get_feature_data(features_filename,
         for line in f:
             list_data = line.split(',')
             data_rows.append((list_data[0], list_data[1:]))
-        feature_df = pd.DataFrame(data_rows, columns=['image_dir', 't_features'])
+        if data_rows[-1] == ('', []):
+            del data_rows[-1]
+        feature_df = pd.DataFrame(data_rows, columns=['image_dir', 't_features'])    
         data_rows = []
         f =  open(d_features_filename).read().split('\n')
         for line in f:
             list_data = line.split(',')
-            data_rows.append((list_data[0], list_data[1:]))
+            data_rows.append((list_data[0], list_data[1:])) 
+        if data_rows[-1] == ('', []):
+            del data_rows[-1]
         feature_df['d_features'] = [i[1] for i in data_rows]
         data_rows = []
         f =  open(ctx_features_filename).read().split('\n')
         for line in f:
             list_data = line.split(',')
             data_rows.append((list_data[0], list_data[1:]))
+        if data_rows[-1] == ('', []):
+            del data_rows[-1]
         feature_df['ctx_features'] = [i[1] for i in data_rows]
+        f = pd.read_table(d_bboxes_filename, header=None)
+        feature_df['dist_xyxy'] = [i for i in f[3]]
         feature_df['vg_image_id'] = [i.split('.')[0].split('/')[-1] for i in feature_df['image_dir']]
         merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
+        merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
+        merged_df = control_tar_dist_size(merged_df)
     else:
         data_rows = []
         with open(features_filename, 'r') as f:
@@ -339,7 +389,8 @@ def get_feature_data(features_filename,
                 data_rows.append((list_data[0], list_data[1:]))
         feature_df = pd.DataFrame(data_rows, columns=['vg_image_id', 'features'])
         merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
-       
+        merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
+
     if len(desired_names) == 0 and len(excluded_names) == 0 and selected_fraction is None:
         return merged_df
     assert len(desired_names) == 0 or len(excluded_names) == 0, "Can't specify both include and exclude"
@@ -390,7 +441,6 @@ def get_feature_data(features_filename,
             unique_responses.add(word)
     print("Num unique topwords:\t", len(unique_topwords))
     print("Num unique response words:\t", len(unique_responses))
-    merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
     print("Overall dataset size:\t", len(merged_df))
 
     return merged_df
@@ -424,6 +474,7 @@ if __name__ == "__main__":
     print(manynames.head())
     print(len(manynames))
     if see_distractors_pragmatics: # EG setup
+        random.seed(1)
         threshold_iou=0.1
         threshold_size=0.01
         t_features_filename = 'src/data/t_features.csv'
@@ -432,7 +483,6 @@ if __name__ == "__main__":
         ctx_features_filename = 'src/data/ctx_features.csv'
         url_map = download_img()  # uncomment if need to download images!
         save_input_representations()
-    
     else: # Mycal's setup
         features_filename = 'src/data/features.csv' if with_bbox else 'src/data/features_nobox.csv'
         url_map = download_img()
