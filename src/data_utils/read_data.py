@@ -305,6 +305,7 @@ def img_features(id_to_url):
 
 def get_feature_data(features_filename,
                      desired_names=[], excluded_names=[], 
+                     excluded_ids=[],
                      selected_fraction=None, max_per_class=None):
     # Merge the feature data with the dataset data.
     manynames = load_cleaned_results(filename='src/data/manynames.tsv')
@@ -389,10 +390,10 @@ def get_feature_data(features_filename,
             unique_responses.add(word)
     print("Num unique topwords:\t", len(unique_topwords))
     print("Num unique response words:\t", len(unique_responses))
+    merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
     print("Overall dataset size:\t", len(merged_df))
-    
-    merged_df.to_csv('src/data/merged_df.csv')
-    #return merged_df
+
+    return merged_df
 
 
 def get_glove_vectors(comm_dim):
@@ -429,8 +430,9 @@ if __name__ == "__main__":
         d_features_filename = 'src/data/d_features.csv'
         d_bboxes_filename = 'src/data/d_xyxy.tsv'
         ctx_features_filename = 'src/data/ctx_features.csv'
-        #url_map = download_img()  # uncomment if need to download images!
-        save_input_representations()   
+        url_map = download_img()  # uncomment if need to download images!
+        save_input_representations()
+    
     else: # Mycal's setup
         features_filename = 'src/data/features.csv' if with_bbox else 'src/data/features_nobox.csv'
         url_map = download_img()
