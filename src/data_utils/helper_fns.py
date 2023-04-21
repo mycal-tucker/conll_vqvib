@@ -15,11 +15,17 @@ def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_di
     listener_obs = []
     labels = []
     embeddings = []
-
-    all_features = all_data['features']
     all_words = all_data[fieldname]
     if num_dist is None:
         num_dist = settings.num_distractors
+        
+    if not settings.see_distractors_pragmatics: # Mycal's setup
+        all_features = all_data['features']
+    else:
+        all_features = all_data['t_features']
+        all_features_dist = all_data['d_features']
+        all_features_ctx = all_data['ctx_features']
+        
     while len(labels) < batch_size:
         targ_idx = int(np.random.random() * len(all_features)) if preset_targ_idx is None else preset_targ_idx
         # Get the word embedding
@@ -35,24 +41,48 @@ def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_di
         distractor_features = []
         candidate_words = set()
         candidate_words.add(word)
-        while len(distractor_features) < num_dist:
-            dist_id = int(np.random.random() * len(all_features))
-            dist_word = all_words[dist_id]
-            if dist_word in candidate_words and settings.distinct_words:
-                continue  # Already exists, so skip
-            candidate_words.add(dist_word)
-            distractor_features.append(all_features[dist_id])
+        
+        if not settings.see_distractors_pragmatics:
+            while len(distractor_features) < num_dist:
+                dist_id = int(np.random.random() * len(all_features))
+                dist_word = all_words[dist_id]
+                if dist_word in candidate_words and settings.distinct_words:
+                    continue  # Already exists, so skip
+                candidate_words.add(dist_word)
+                distractor_features.append(all_features[dist_id])
+        else:
+            distractor_features = all_features_dist[targ_idx]
+            ctx_features = all_features_ctx[targ_idx]
+        
+        obs_targ_idx = int(np.random.random() * (num_dist + 1)) 
         # if settings.distinct_words:
         #     print("Words", candidate_words)
         # distractor_features = [all_features[int(np.random.random() * len(all_features))] for _ in range(num_dist)]
-        obs_targ_idx = int(np.random.random() * (num_dist + 1))  # Pick where to slide the target observation into.
-        l_obs = np.expand_dims(np.vstack(distractor_features[:obs_targ_idx] + [targ_features] + distractor_features[obs_targ_idx:]), axis=0)
-        listener_obs.append(l_obs)
-        labels.append(obs_targ_idx)
-        s_obs = targ_features if not see_distractors else np.expand_dims(np.vstack([targ_features] + distractor_features), axis=0)
-        speaker_obs.append(s_obs)
-    speaker_tensor = torch.Tensor(np.vstack(speaker_obs)).to(settings.device)
-    listener_tensor = torch.Tensor(np.vstack(listener_obs)).to(settings.device)
+        if settings.see_distractors_pragmatics: # EG setup
+            if settings.with_ctx_representation:
+                s_obs = np.expand_dims(np.vstack([targ_features] + [distractor_features] + [ctx_features]), axis=0)
+                speaker_obs.append(s_obs)
+                l_obs = np.expand_dims(np.vstack([distractor_features][:obs_targ_idx] + [targ_features] + [distractor_features][obs_targ_idx:] + [ctx_features]), axis=0)
+                listener_obs.append(l_obs)
+                labels.append(obs_targ_idx)
+            else:
+                s_obs = np.expand_dims(np.vstack([targ_features] + [distractor_features]), axis=0)
+                speaker_obs.append(s_obs)
+                l_obs = np.expand_dims(np.vstack([distractor_features][:obs_targ_idx] + [targ_features] + [distractor_features][obs_targ_idx:]), axis=0)
+                listener_obs.append(l_obs)
+                labels.append(obs_targ_idx)
+        else: # Mycal's setup
+            s_obs = targ_features if not see_distractors else np.expand_dims(np.vstack([targ_features] + distractor_features), axis=0)
+            speaker_obs.append(s_obs)
+            l_obs = np.expand_dims(np.vstack(distractor_features[:obs_targ_idx] + [targ_features] + distractor_features[obs_targ_idx:]), axis=0)
+            listener_obs.append(l_obs)
+            labels.append(obs_targ_idx)            
+        
+    speaker_tensor = torch.Tensor(np.vstack(speaker_obs).astype(np.float)).to(settings.device)
+    listener_tensor = torch.Tensor(np.vstack(listener_obs).astype(np.float)).to(settings.device)
+    #speaker_tensor = torch.Tensor(np.vstack(speaker_obs)).to(settings.device)
+    #listener_tensor = torch.Tensor(np.vstack(listener_obs)).to(settings.device)
+
     if vae is not None:
         with torch.no_grad():
             # speaker_obs = np.vstack(speaker_obs)
@@ -63,10 +93,7 @@ def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_di
             speaker_tensor, _ = vae(speaker_tensor)
             # listener_tensor, _ = vae(listener_tensor)
             pass
-
-    # speaker_tensor = torch.Tensor(speaker_obs).to(settings.device)
-    # listener_tensor = torch.Tensor(listener_obs).to(settings.device)
-    label_tensor = torch.Tensor(labels).long().to(settings.device)
+    label_tensor = torch.Tensor(labels).long().to(settings.device) 
     return speaker_tensor, listener_tensor, label_tensor, embeddings
 
 
