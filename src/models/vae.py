@@ -5,10 +5,12 @@ from src.models.network_utils import reparameterize
 
 
 class VAE(nn.Module):
-    def __init__(self, input_dim, hidden_dim=32):
+    def __init__(self, input_dim, hidden_dim=32, num_imgs=1):
         super(VAE, self).__init__()
+        self.input_dim = input_dim
+        self.num_imgs = num_imgs
         self.enc = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(self.input_dim * self.num_imgs, 128),
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
@@ -20,9 +22,10 @@ class VAE(nn.Module):
             nn.ReLU(),
             nn.Linear(64, 128),
             nn.ReLU(),
-            nn.Linear(128, input_dim))
+            nn.Linear(128, self.input_dim * self.num_imgs))
 
     def forward(self, x):
+        x = torch.reshape(x, (-1, self.input_dim * self.num_imgs))
         hidden = self.enc(x)
         mu = self.fc_mu(hidden)
         log_var = self.fc_var(hidden)
@@ -32,4 +35,3 @@ class VAE(nn.Module):
         recons_loss = torch.mean((dec - x) ** 2)
         total_loss = recons_loss + 0.0 * kl_loss
         return dec, total_loss
-
