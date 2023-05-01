@@ -21,7 +21,7 @@ from sklearn.decomposition import PCA
 
 from src.data_utils.helper_fns import get_unique_labels
 from src.data_utils.helper_fns import intersection_over_union
-
+import src.settings as settings
 
 
 # %% ---- FUNCTION TO LOAD MANYNAMES.TSV
@@ -208,10 +208,10 @@ def save_input_representations(filename='src/data/manynames.tsv', filename_detec
     del detdf['scores'] 
     # merge MN with detections	
     merged_df = manynames.merge(detdf, left_on='link_vg', right_on='link_vg')
-    for img_id, tar_xywh, detections, classes in zip(merged_df['vg_image_id'], 
+    for img_id, tar_xywh, detections, classes in list(zip(merged_df['vg_image_id'], 
                                             merged_df['bbox_xywh'],
                                             merged_df['detected_xyxy'],
-                                            merged_df['classes']):
+                                            merged_df['classes']))[15000:]:
         img_name = image_directory + str(img_id) + suffix
         try:
             image_features, image_size = img_features_from_id(img_id)
@@ -228,17 +228,17 @@ def save_input_representations(filename='src/data/manynames.tsv', filename_detec
             if dist_xyxy != "not found":
                 # save target features
                 with open(t_features_filename, 'a') as f:
-                    f.write(img_name.split('.')[0] + suffix + ', ')
+                    f.write(str(img_id) + ', ')
                     f.write(', '.join([str(e) for e in target_features.cpu().detach().numpy()]))
                     f.write('\n')     
                 # save distractor features
                 with open(d_features_filename, 'a') as f:
-                    f.write(img_name.split('.')[0] + suffix + ', ')
+                    f.write(str(img_id) + ', ')
                     f.write(', '.join([str(e) for e in distractor_features.cpu().detach().numpy()]))
                     f.write('\n')
                 # save distractor bboxes
                 with open(d_bboxes_filename, 'a') as f:
-                    f.write(img_name.split('.')[0] + suffix + '\t')
+                    f.write(str(img_id) + '\t')
                     f.write(str(tar_xywh) + '\t')
                     f.write(str(dist_class) + '\t')
                     f.write(str(dist_xyxy)+ '\t')
@@ -253,7 +253,7 @@ def save_input_representations(filename='src/data/manynames.tsv', filename_detec
                 # the image context representation is the average
                 ctx_features = sum(ctx_feature_list) / len(ctx_feature_list)
                 with open(ctx_features_filename, 'a') as f:
-                    f.write(img_name.split('.')[0] + suffix + ', ')
+                    f.write(str(img_id) + ', ')
                     f.write(', '.join([str(e) for e in ctx_features.cpu().detach().numpy()]))
                     f.write('\n')
         except UnboundLocalError: # if we have skipped the image because wrong array shape
@@ -350,7 +350,7 @@ def get_feature_data(features_filename,
     # Merge the feature data with the dataset data.
     manynames = load_cleaned_results(filename='src/data/manynames.tsv')
     manynames['vg_image_id'] = [str(i) for i in manynames['vg_image_id']]
-    if see_distractors_pragmatics == True:
+    if settings.see_distractors_pragmatics == True:
         data_rows = []
         f =  open(features_filename).read().split('\n')
         for line in f:
@@ -358,9 +358,9 @@ def get_feature_data(features_filename,
             data_rows.append((list_data[0], list_data[1:]))
         if data_rows[-1] == ('', []):
             del data_rows[-1]
-        feature_df = pd.DataFrame(data_rows, columns=['image_dir', 't_features'])    
+        feature_df = pd.DataFrame(data_rows, columns=['vg_image_id', 't_features'])    
         data_rows = []
-        f =  open(d_features_filename).read().split('\n')
+        f =  open(settings.d_features_filename).read().split('\n')
         for line in f:
             list_data = line.split(',')
             data_rows.append((list_data[0], list_data[1:])) 
@@ -368,25 +368,24 @@ def get_feature_data(features_filename,
             del data_rows[-1]
         feature_df['d_features'] = [i[1] for i in data_rows]
         data_rows = []
-        f =  open(ctx_features_filename).read().split('\n')
+        f =  open(settings.ctx_features_filename).read().split('\n')
         for line in f:
             list_data = line.split(',')
             data_rows.append((list_data[0], list_data[1:]))
         if data_rows[-1] == ('', []):
             del data_rows[-1]
         feature_df['ctx_features'] = [i[1] for i in data_rows]
-        f = pd.read_table(d_bboxes_filename, header=None)
-        feature_df['dist_xyxy'] = [i for i in f[3]]
-        feature_df['vg_image_id'] = [i.split('.')[0].split('/')[-1] for i in feature_df['image_dir']]
+        f = pd.read_table(settings.d_bboxes_filename, header=None)
+        feature_df['dist_xyxy'] = [i for i in f[3]] 
         merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
         merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
         merged_df = control_tar_dist_size(merged_df)
     else:
         data_rows = []
-        with open(features_filename, 'r') as f:
-            for line in f:
-                list_data = eval(line)
-                data_rows.append((list_data[0], list_data[1:]))
+        f =  open(features_filename).read().split('\n')
+        for line in f:
+            list_data = line.split(',')
+            data_rows.append((list_data[0], list_data[1:]))
         feature_df = pd.DataFrame(data_rows, columns=['vg_image_id', 'features'])
         merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
         merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
@@ -447,7 +446,7 @@ def get_feature_data(features_filename,
 
 
 def get_glove_vectors(comm_dim):
-    raw_data = pd.read_table('data/glove.6B.100d.txt', sep=" ", index_col=0, header=None, quoting=csv.QUOTE_NONE)
+    raw_data = pd.read_table('src/data/glove.6B.100d.txt', sep=" ", index_col=0, header=None, quoting=csv.QUOTE_NONE)
     if comm_dim > 100:
         return raw_data
     np_data = np.array(raw_data)
@@ -481,7 +480,7 @@ if __name__ == "__main__":
         d_features_filename = 'src/data/d_features.csv'
         d_bboxes_filename = 'src/data/d_xyxy.tsv'
         ctx_features_filename = 'src/data/ctx_features.csv'
-        url_map = download_img()  # uncomment if need to download images!
+        #url_map = download_img()  # uncomment if need to download images!
         save_input_representations()
     else: # Mycal's setup
         features_filename = 'src/data/features.csv' if with_bbox else 'src/data/features_nobox.csv'

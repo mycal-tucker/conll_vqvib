@@ -1,3 +1,5 @@
+import src.settings as settings
+
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -17,5 +19,6 @@ class Listener(nn.Module):
         embedded_features = self.feature_embedder(features)
         # Get cosine similarities
         cosines = self.cos(embedded_comm, embedded_features)
-        logits = F.log_softmax(cosines, dim=1)
+        #logits = F.log_softmax(cosines, dim=1)
+        logits = cosines
         return logits

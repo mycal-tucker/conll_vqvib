@@ -8,16 +8,9 @@ from src.models.vae import VAE
 
 
 def run():
-    if settings.see_distractors_pragmatics:
-        train_data = get_feature_data(t_features_filename)
-        if settings.with_ctx_representation:
-            model = VAE(512, 32, 3)
-        else:
-            model = VAE(512, 32, 2)
-    else:
-        train_data = get_feature_data(features_filename)
-        model = VAE(512, 32)
+    model = VAE(512, 32)
     model.to(settings.device)
+    train_data = get_feature_data(features_filename)
     optimizer = optim.Adam(model.parameters())
     running_loss = 0
     for epoch in range(num_epochs):
@@ -34,7 +27,9 @@ def run():
 
 
 if __name__ == '__main__':
-    savepath = 'src/saved_models/vae0.00001.pt'
+    settings.see_distractors_pragmatics = False
+    features_filename = 'src/data/t_features.csv'
+    savepath = 'src/saved_models/vae0.001.pt'
     glove_data = get_glove_vectors(32)
     num_epochs = 10000
     batch_size = 32
@@ -42,13 +37,4 @@ if __name__ == '__main__':
     settings.num_distractors = 1
     settings.embedding_cache = {}
     settings.distinct_words = False
-    settings.see_distractors_pragmatics = True
-    settings.with_ctx_representation = True
-    if settings.see_distractors_pragmatics: # EG setup
-        t_features_filename = 'src/data/t_features.csv'
-        settings.d_features_filename = 'src/data/d_features.csv'
-        settings.d_bboxes_filename = 'src/data/d_xyxy.tsv'
-        settings.ctx_features_filename = 'src/data/ctx_features.csv'
-    else: # Mycal's setup
-        features_filename = 'src/data/features.csv' if with_bbox else 'src/data/features_nobox.csv'
     run()

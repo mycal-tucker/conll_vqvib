@@ -16,16 +16,16 @@ def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_di
     labels = []
     embeddings = []
     all_words = all_data[fieldname]
+
     if num_dist is None:
-        num_dist = settings.num_distractors
-        
+        num_dist = settings.num_distractors 
     if not settings.see_distractors_pragmatics: # Mycal's setup
-        all_features = all_data['features']
+        all_features = all_data['features'] 
     else:
         all_features = all_data['t_features']
         all_features_dist = all_data['d_features']
         all_features_ctx = all_data['ctx_features']
-        
+
     while len(labels) < batch_size:
         targ_idx = int(np.random.random() * len(all_features)) if preset_targ_idx is None else preset_targ_idx
         # Get the word embedding
@@ -93,7 +93,7 @@ def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_di
             speaker_tensor, _ = vae(speaker_tensor)
             # listener_tensor, _ = vae(listener_tensor)
             pass
-    label_tensor = torch.Tensor(labels).long().to(settings.device) 
+    label_tensor = torch.Tensor(labels).long().to(settings.device)
     return speaker_tensor, listener_tensor, label_tensor, embeddings
 
 
@@ -120,7 +120,8 @@ def get_entry_for_labels(dataset, labels, fieldname='topname', num_repeats=1):
             matching_rows = dataset.loc[dataset[fieldname] == label].index.tolist()
             rand_idx = int(np.random.random() * len(matching_rows))
             rows.append(matching_rows[rand_idx])
-    big_data = dataset.iloc[rows]
+    big_data = dataset[dataset.index.isin(rows)]
+    #big_data = dataset.iloc[rows]
     return big_data
 
 
@@ -130,7 +131,10 @@ def get_rand_entries(dataset, num_entries):
 
 
 def get_embedding_batch(all_data, embed_data, batch_size, fieldname, vae=None):
-    all_features = all_data['features']
+    if settings.see_distractors_pragmatics:
+        all_features = all_data['t_features']
+    else:
+        all_features = all_data['features']
     features = []
     embeddings = []
     while len(features) < batch_size:
