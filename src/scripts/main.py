@@ -13,6 +13,7 @@ import random
 import src.settings as settings
 from src.data_utils.helper_fns import gen_batch, get_glove_embedding, get_unique_labels, get_entry_for_labels, get_unique_by_field
 from src.data_utils.read_data import get_feature_data
+from src.data_utils.read_data import load_cleaned_results
 from src.models.decoder import Decoder
 from src.models.listener import Listener
 from src.models.team import Team
@@ -26,6 +27,7 @@ from src.utils.performance_metrics import PerformanceMetrics
 
 import time
 
+from src.data_utils.read_data import get_glove_vectors
 
 def evaluate(model, dataset, batch_size, vae, glove_data, fieldname, num_dist=None):
     model.eval()
@@ -542,79 +544,78 @@ def get_super_loss(supervised_data, speaker):
     return supervised_loss
 
 
-def train(model, train_data, val_data, viz_data, glove_data, vae, savepath, comm_dim, fieldname, num_epochs=3000, batch_size=1024,
-          burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
-    
-    # we don't care about this: we take the entire dataset
-    #unique_topnames, _ = get_unique_labels(train_data)
-    #sup_dataset = pd.concat([get_entry_for_labels(train_data, unique_topnames) for _ in range(3)])
-    #sup_dataset = sup_dataset.sample(frac=1).reset_index(drop=True)  # Shuffle the data.
-    
-    sup_dataset = train_data.sample(frac=1).reset_index(drop=True)  # Shuffle the data.
-    
-    ####### HERE: to understand get_supervised_data, we need gen_batch
+def train(model, train_data, val_data, viz_data, glove_data, vae, savepath, comm_dim, fieldname, num_epochs=3000, batch_size=1024, burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
+
+    unique_topnames, _ = get_unique_labels(train_data)
+    sup_dataset = pd.concat([get_entry_for_labels(train_data, unique_topnames) for _ in range(3)])
+    sup_dataset = sup_dataset.sample(frac=1).reset_index(drop=True)  # Shuffle the data.
     supervised_data = get_supervised_data(sup_dataset, 2, glove_data, vae)
+    print(supervised_data.head)
+    
 
-    criterion = nn.CrossEntropyLoss()
-    # optimizer = optim.Adam(model.parameters(), lr=0.0001)  # 0.0001 is good for no recons, or for onehot things.
-    # optimizer = optim.Adam(model.parameters(), lr=0.001)  # 0.001 is good for alpha 10 (and is the default)
-    optimizer = optim.Adam(model.parameters(), lr=settings.lr)
-    running_acc = 0
-    running_mse = 0
-    # num_cand_to_metrics = {True: {2: [], 16: [], 32: []},  # Don't try many distractors when
-    num_cand_to_metrics = {True: {2: []},  # Don't try many distractors when
-                           False: {2: [], 16: [], 32: []}}
-    for set_distinct in [True, False]:
-        for empty_list in num_cand_to_metrics.get(set_distinct).values():
-            empty_list.extend([PerformanceMetrics(), PerformanceMetrics()])  # Train metrics, validation metrics
-    settings.epoch = 0
-    for epoch in range(num_epochs):
-        settings.epoch += 1
-        if epoch > burnin_epochs:
-            settings.kl_weight += settings.kl_incr
-        speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
-        start_time = time.time()
-        optimizer.zero_grad()
-        outputs, speaker_loss, info, recons = model(speaker_obs, listener_obs)
+    # criterion = nn.CrossEntropyLoss()
+    # # optimizer = optim.Adam(model.parameters(), lr=0.0001)  # 0.0001 is good for no recons, or for onehot things.
+    # # optimizer = optim.Adam(model.parameters(), lr=0.001)  # 0.001 is good for alpha 10 (and is the default)
+    # optimizer = optim.Adam(model.parameters(), lr=settings.lr)
+    # running_acc = 0
+    # running_mse = 0
+    # # num_cand_to_metrics = {True: {2: [], 16: [], 32: []},  # Don't try many distractors when
+    # num_cand_to_metrics = {True: {2: []},  # Don't try many distractors when
+    #                        False: {2: [], 16: [], 32: []}}
+    # for set_distinct in [True, False]:
+    #     for empty_list in num_cand_to_metrics.get(set_distinct).values():
+    #         empty_list.extend([PerformanceMetrics(), PerformanceMetrics()])  # Train metrics, validation metrics
+    # settings.epoch = 0
+    # for epoch in range(num_epochs):
+    #     settings.epoch += 1
+    #     if epoch > burnin_epochs:
+    #         settings.kl_weight += settings.kl_incr
+    #     speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
+    #     start_time = time.time()
+    #     optimizer.zero_grad()
+    #     outputs, speaker_loss, info, recons = model(speaker_obs, listener_obs)
 
-        loss = criterion(outputs, labels)
-        supervised_loss = 0
-        if settings.supervision_weight != 0:  # Don't even bother computing the loss if it's not used.
-            supervised_loss = get_super_loss(supervised_data, model.speaker)
-            loss = loss + settings.supervision_weight * supervised_loss
-        if len(speaker_obs.shape) == 2:
-            speaker_obs = torch.unsqueeze(speaker_obs, 1)
-        recons_loss = torch.mean(((speaker_obs - recons) ** 2))
-        loss += settings.alpha * recons_loss
-        loss += speaker_loss
-        # print("Speaker loss fraction:\t", speaker_loss.item() / loss.item())
-        # print("Recons loss fraction:\t", settings.alpha * recons_loss.item() / loss.item())
-        loss.backward()
-        optimizer.step()
+    #     loss = criterion(outputs, labels)
+    #     supervised_loss = 0
+    #     if settings.supervision_weight != 0:  # Don't even bother computing the loss if it's not used.
+    #         supervised_loss = get_super_loss(supervised_data, model.speaker)
+    #         loss = loss + settings.supervision_weight * supervised_loss
+    #     if len(speaker_obs.shape) == 2:
+    #         speaker_obs = torch.unsqueeze(speaker_obs, 1)
+    #     recons_loss = torch.mean(((speaker_obs - recons) ** 2))
+    #     loss += settings.alpha * recons_loss
+    #     loss += speaker_loss
+    #     # print("Speaker loss fraction:\t", speaker_loss.item() / loss.item())
+    #     # print("Recons loss fraction:\t", settings.alpha * recons_loss.item() / loss.item())
+    #     loss.backward()
+    #     optimizer.step()
 
-        end_time = time.time()
-        # print("Elapsed time", end_time - start_time)
+    #     end_time = time.time()
+    #     # print("Elapsed time", end_time - start_time)
 
-        # Metrics
-        pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
-        num_correct = np.sum(pred_labels == labels.cpu().numpy())
-        num_total = pred_labels.size
-        running_acc = running_acc * 0.95 + 0.05 * num_correct / num_total
-        running_mse = running_mse * 0.95 + 0.05 * recons_loss.item()
-        if epoch % 100 == 0:
-            print('epoch', epoch, 'of', num_epochs)
-            # print("Overall loss", loss.item())
-            # print("Kl weight", settings.kl_weight)
-            print("Running acc", running_acc)
-            print("Running mse", running_mse)
-            # print("Supervised loss", supervised_loss)
+    #     # Metrics
+    #     pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
+    #     num_correct = np.sum(pred_labels == labels.cpu().numpy())
+    #     num_total = pred_labels.size
+    #     running_acc = running_acc * 0.95 + 0.05 * num_correct / num_total
+    #     running_mse = running_mse * 0.95 + 0.05 * recons_loss.item()
+    #     if epoch % 100 == 0:
+    #         print('epoch', epoch, 'of', num_epochs)
+    #         # print("Overall loss", loss.item())
+    #         # print("Kl weight", settings.kl_weight)
+    #         print("Running acc", running_acc)
+    #         print("Running mse", running_mse)
+    #         # print("Supervised loss", supervised_loss)
 
-        if epoch % val_period == val_period - 1:
-            eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics,
-                       savepath, epoch, fieldname, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
+    #     if epoch % val_period == val_period - 1:
+    #         eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics,
+    #                    savepath, epoch, fieldname, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
 
 def run():
-    num_imgs = 1 if not settings.see_distractor else (num_distractors + 1)
+    if settings.see_distractor_pragmatics:
+        num_imgs = 3 if settings.with_ctx_representation else 2
+    else:
+        num_imgs = 1 if not settings.see_distractor else (num_distractors + 1)
     if speaker_type == 'cont':
         speaker = MLP(feature_len, c_dim, num_layers=3, onehot=False, variational=variational, num_imgs=num_imgs)
     elif speaker_type == 'onehot':
@@ -627,21 +628,28 @@ def run():
     model = Team(speaker, listener, decoder)
     model.to(settings.device)
 
-    train_data = get_feature_data(features_filename, selected_fraction=train_fraction)
-    train_topnames, train_responses = get_unique_labels(train_data)
-    val_data = get_feature_data(features_filename, excluded_names=train_responses)
-    # val_data = train_data  # For debugging, it's faster to just reuse datasets
-    # test_data = get_feature_data(features_filename, desired_names=test_classes)
-    # viz_data = get_feature_data(features_filename, desired_names=viz_names, max_per_class=40) if do_plot_comms else train_data
+    if settings.see_distractors_pragmatics:
+        data = get_feature_data(t_features_filename, excluded_ids=excluded_ids)
+        data = data.sample(frac=1) # Shuffle the data.
+        train_data, val_data, test_data = np.split(data.sample(frac=1, random_state=46), 
+                                        [int(.7*len(data)), int(.9*len(data))])
+        print(len(train_data), len(val_data), len(test_data))
+    else:
+        train_data = get_feature_data(features_filename, selected_fraction=train_fraction)
+        train_topnames, train_responses = get_unique_labels(train_data)
+        val_data = get_feature_data(features_filename, excluded_names=train_responses)
+        # val_data = train_data  # For debugging, it's faster to just reuse datasets
+        # test_data = get_feature_data(features_filename, desired_names=test_classes)
+        # viz_data = get_feature_data(features_filename, desired_names=viz_names, max_per_class=40) if do_plot_comms else train_data
     viz_data = train_data  # For debugging, it's faster to just reuse datasets
-    train(model, train_data, val_data, viz_data, vae=vae_model, savepath=save_loc, comm_dim=c_dim, num_epochs=n_epochs,
-          batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms,
-          calculate_complexity=do_calc_complexity)
+    train(model, train_data, val_data, viz_data, vae=vae_model, savepath=save_loc, comm_dim=c_dim, num_epochs=n_epochs, batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
 
 
 if __name__ == '__main__':
     feature_len = 512
     settings.see_distractor = False
+    settings.see_distractors_pragmatics = True
+    settings.with_ctx_representation = True
     num_distractors = 1
     settings.num_distractors = num_distractors
     n_epochs = 3000
@@ -664,11 +672,21 @@ if __name__ == '__main__':
     test_classes = ['couch', 'counter', 'bowl']
     viz_names = ['airplane', 'plane',
                  'animal', 'cow', 'dog', 'cat']
-    features_filename = 'data/features.csv' if with_bbox else 'data/features_nobox.csv'
-    np.random.seed(0)
+    if settings.see_distractors_pragmatics: # EG setup
+        t_features_filename = 'src/data/t_features.csv'
+        settings.d_features_filename = 'src/data/d_features.csv'
+        settings.d_bboxes_filename = 'src/data/d_xyxy.tsv'
+        settings.ctx_features_filename = 'src/data/ctx_features.csv'
+        manynames = load_cleaned_results(filename="src/data/manynames.tsv")
+        someRE = pd.read_csv("src/data/someRE.csv", sep = ";")
+        merged_tmp = pd.merge(manynames, someRE, on=['link_vg'])
+        excluded_ids = [i for i in merged_tmp['vg_image_id']] 
+    else: 
+        features_filename = 'data/features.csv' if with_bbox else 'data/features_nobox.csv'
     vae_model = VAE(512, 32)
     vae_model.load_state_dict(torch.load('saved_models/vae0.001.pt'))
     vae_model.to(settings.device)
+    np.random.seed(0)
     settings.embedding_cache = {}
     settings.sample_first = True
     speaker_type = 'vq'  # Options are 'vq', 'cont', or 'onehot'
@@ -678,3 +696,4 @@ if __name__ == '__main__':
     torch.manual_seed(seed)
     save_loc = 'saved_models/' + speaker_type + '/seed' + str(seed) + '/'
     run()
+
