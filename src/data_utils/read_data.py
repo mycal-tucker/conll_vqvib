@@ -208,10 +208,10 @@ def save_input_representations(filename='src/data/manynames.tsv', filename_detec
     del detdf['scores'] 
     # merge MN with detections	
     merged_df = manynames.merge(detdf, left_on='link_vg', right_on='link_vg')
-    for img_id, tar_xywh, detections, classes in list(zip(merged_df['vg_image_id'], 
+    for img_id, tar_xywh, detections, classes in zip(merged_df['vg_image_id'], 
                                             merged_df['bbox_xywh'],
                                             merged_df['detected_xyxy'],
-                                            merged_df['classes']))[15000:]:
+                                            merged_df['classes']):
         img_name = image_directory + str(img_id) + suffix
         try:
             image_features, image_size = img_features_from_id(img_id)
@@ -259,6 +259,83 @@ def save_input_representations(filename='src/data/manynames.tsv', filename_detec
         except UnboundLocalError: # if we have skipped the image because wrong array shape
             pass
  
+
+def save_input_representations_someRE(filename='src/data/manynames.tsv', filename_detections='src/data/manynames_detections.tsv'):
+    """
+    Extracts and saves visual features for targets, distractors, and context. 
+    """
+    
+    someRE = pd.read_csv("src/data/someRE.csv", sep = ";")
+    manynames = load_cleaned_results(filename)
+    manynames['vg_image_id'] = [str(i) for i in manynames['vg_image_id']]
+    detdf = pd.read_csv(filename_detections, sep='\t')
+    detdf['detected_xyxy'] = detdf['detected_xyxy'].apply(lambda x: eval(x))
+    detdf['classes'] = detdf['classes'].apply(lambda x: eval(x))
+    del detdf['tar_xywh']
+    del detdf['scores']
+    # merge MN with detections  
+    merged_df = manynames.merge(detdf, left_on='link_vg', right_on='link_vg')
+    # merge with someRE
+    merged_df = someRE.merge(merged_df, left_on='link_vg', right_on='link_vg')
+
+    for img_id, tar_xywh, dist_xywh, detections, classes in zip(merged_df['vg_image_id'],
+                                            merged_df['tar_xywh'].apply(lambda x: eval(x)),
+                                            merged_df['dist_xywh'].apply(lambda x: eval(x)),
+                                            merged_df['detected_xyxy'],
+                                            merged_df['classes']):
+        img_name = image_directory + str(img_id) + suffix
+        image_features, image_size = img_features_from_id(img_id)
+        try:
+            # get target
+            tar_x1 = tar_xywh[0]
+            tar_y1 = tar_xywh[1]
+            tar_x2 = tar_xywh[0] + tar_xywh[2]
+            tar_y2 = tar_xywh[1] + tar_xywh[3]
+            tar_xyxy = [tar_x1, tar_y1, tar_x2, tar_y2]
+            target_features, target_size = obj_features(img_id, tar_xyxy)
+            # get distractor
+            dist_x1 = dist_xywh[0]
+            dist_y1 = dist_xywh[1]
+            dist_x2 = dist_xywh[0] + dist_xywh[2]
+            dist_y2 = dist_xywh[1] + dist_xywh[3]
+            dist_xyxy = [dist_x1, dist_y1, dist_x2, dist_y2]
+            distractor_features, distractor_size = obj_features(img_id, dist_xyxy)
+            # get context
+            context_objs = []
+            for det_xyxy, det_class in zip(detections, classes):
+                det_w = det_xyxy[2]-det_xyxy[0]
+                det_h = det_xyxy[3]-det_xyxy[1]
+                det_size = det_w * det_h
+                iou_t = intersection_over_union(tar_xyxy, det_xyxy)
+                iou_d = intersection_over_union(dist_xyxy, det_xyxy)
+                if iou_t <= threshold_iou and iou_d <= threshold_iou and distractor_size/image_size > threshold_size:
+                    context_objs.append([det_xyxy, det_class])
+            ctx_feature_list = []
+            for ctx_obj_xyxy, cl in context_objs:
+                ctx_obj_features, _ = obj_features(img_id, ctx_obj_xyxy)
+                # normalize features before computing average
+                norm_feat = F.normalize(ctx_obj_features, p=2, dim=0)
+                ctx_feature_list.append(norm_feat)
+            ctx_features = sum(ctx_feature_list) / len(ctx_feature_list)
+        except ZeroDivisionError: # not found context objects that fulfill requirements
+            pass
+
+        # save target features
+        with open(someRE_t_features_filename, 'a') as f:
+            f.write(str(img_id) + ', ')
+            f.write(', '.join([str(e) for e in target_features.cpu().detach().numpy()]))
+            f.write('\n')
+        # save distractor features
+        with open(someRE_d_features_filename, 'a') as f:
+            f.write(str(img_id) + ', ')
+            f.write(', '.join([str(e) for e in distractor_features.cpu().detach().numpy()]))
+            f.write('\n')
+        # save context features
+        with open(someRE_ctx_features_filename, 'a') as f:
+            f.write(str(img_id) + ', ')
+            f.write(', '.join([str(e) for e in ctx_features.cpu().detach().numpy()]))
+            f.write('\n')
+
 
 def img_features(id_to_url):
     # Get a pretrained model
@@ -350,7 +427,7 @@ def get_feature_data(features_filename,
     # Merge the feature data with the dataset data.
     manynames = load_cleaned_results(filename='src/data/manynames.tsv')
     manynames['vg_image_id'] = [str(i) for i in manynames['vg_image_id']]
-    if settings.see_distractors_pragmatics == True:
+    if settings.see_distractors_pragmatics:
         data_rows = []
         f =  open(features_filename).read().split('\n')
         for line in f:
@@ -379,7 +456,9 @@ def get_feature_data(features_filename,
         feature_df['dist_xyxy'] = [i for i in f[3]] 
         merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
         merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
-        merged_df = control_tar_dist_size(merged_df)
+        if not settings.eval_someRE:
+            # on ManyNames images we want to use this function, but not on someRE
+            merged_df = control_tar_dist_size(merged_df)
     else:
         data_rows = []
         f =  open(features_filename).read().split('\n')
@@ -476,12 +555,18 @@ if __name__ == "__main__":
         random.seed(1)
         threshold_iou=0.1
         threshold_size=0.01
+        # ManyNames images files
         t_features_filename = 'src/data/t_features.csv'
         d_features_filename = 'src/data/d_features.csv'
         d_bboxes_filename = 'src/data/d_xyxy.tsv'
         ctx_features_filename = 'src/data/ctx_features.csv'
+        # someRE images files
+        someRE_t_features_filename = 'src/data/someRE_t_features.csv'
+        someRE_d_features_filename = 'src/data/someRE_d_features.csv'
+        someRE_ctx_features_filename = 'src/data/someRE_ctx_features.csv'
         #url_map = download_img()  # uncomment if need to download images!
-        save_input_representations()
+        #save_input_representations()
+        save_input_representations_someRE()
     else: # Mycal's setup
         features_filename = 'src/data/features.csv' if with_bbox else 'src/data/features_nobox.csv'
         url_map = download_img()

@@ -31,10 +31,10 @@ class Decoder(nn.Module):
             x = F.relu(x)
         split_features = torch.reshape(x, (-1, self.num_imgs, self.hidden_dim))
         recons = self.recons(split_features)
-#        if settings.see_distractors_pragmatics:
+        if settings.see_distractors_pragmatics:
             # mask the recons of distractor and context
-#            mask = torch.ones_like(recons)
-#            mask[1:self.num_imgs, :] = 0
-#            recons = recons * mask
+            mask = torch.ones_like(recons)
+            mask[:, 1:self.num_imgs, :] = 0
+            recons = recons * mask
 
         return recons

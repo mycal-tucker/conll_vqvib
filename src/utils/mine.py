@@ -27,7 +27,13 @@ class Net(nn.Module):
 
 def get_info(model, dataset, targ_dim, glove_data=None, num_epochs=200, batch_size=1024):
     # Define a network that takes in the two variables to calculate the MI of.
-    mine_net = Net(512, targ_dim)
+    if settings.see_distractors_pragmatics:
+        if settings.with_ctx_representation:
+            mine_net = Net(512 * (settings.num_distractors+2), targ_dim)
+        else:
+            mine_net = Net(512 * (settings.num_distractors+1), targ_dim)
+    else:
+        mine_net = Net(512, targ_dim)
     mine_net.to(settings.device)
     optimizer = optim.Adam(mine_net.parameters())
     running_loss = 0
@@ -35,10 +41,13 @@ def get_info(model, dataset, targ_dim, glove_data=None, num_epochs=200, batch_si
         speaker_obs, _, _, _ = gen_batch(dataset, batch_size, fieldname='topname', glove_data=glove_data)
         with torch.no_grad():
             targ_var, _, _ = model.speaker(speaker_obs)  # Communication
+        
         # Shuffle the target variable so we can get a marginal of sorts.
         targ_shuffle = torch.Tensor(np.random.permutation(targ_var.cpu().numpy())).to(settings.device)
         optimizer.zero_grad()
-
+        
+        if settings.see_distractors_pragmatics:
+            speaker_obs = speaker_obs.view(batch_size, -1)
         pred_xy = mine_net(speaker_obs, targ_var)
         pred_x_y = mine_net(speaker_obs, targ_shuffle)
         ret = torch.mean(pred_xy) - torch.log(torch.mean(torch.exp(pred_x_y)))
@@ -57,7 +66,9 @@ def get_info(model, dataset, targ_dim, glove_data=None, num_epochs=200, batch_si
             targ_var, _, _ = model.speaker(speaker_obs)  # Communication
         targ_shuffle = torch.Tensor(np.random.permutation(targ_var.cpu().numpy())).to(settings.device)
         optimizer.zero_grad()
-
+        
+        if settings.see_distractors_pragmatics:
+            speaker_obs = speaker_obs.view(batch_size, -1)
         pred_xy = mine_net(speaker_obs, targ_var)
         pred_x_y = mine_net(speaker_obs, targ_shuffle)
         ret = torch.mean(pred_xy) - torch.log(torch.mean(torch.exp(pred_x_y)))

@@ -167,16 +167,19 @@ def evaluate_with_english(model, dataset, vae, embed_to_tok, glove_data, fieldna
 def plot_comms(model, dataset, basepath):
     num_tests = 1000  # Generate lots of samples for the same input because it's not deterministic.
     labels = []
-    for f, f_d, f_ctx in zip(dataset['t_features'], dataset['d_features'], dataset['ctx_features']):
-        s_obs = np.expand_dims(np.vstack([f] + [f_d] + [f_ctx]), axis=0)
-        speaker_obs = torch.Tensor(np.vstack(s_obs).astype(np.float)).to(settings.device)   
-        speaker_obs = torch.unsqueeze(speaker_obs, 0)
-        speaker_obs = speaker_obs.repeat(num_tests, 1)
-        likelihoods = model.speaker.get_token_dist(speaker_obs)
-        top_comm_idx = np.argmax(likelihoods)
-        top_likelihood = likelihoods[top_comm_idx]
-        label = top_comm_idx if top_likelihood > 0.4 else -1
-        labels.append(label)
+    if settings.with_ctx_representation:
+        for f, f_d, f_ctx in zip(dataset['t_features'], dataset['d_features'], dataset['ctx_features']):
+            speaker_obs = np.expand_dims(np.vstack([f] + [f_d] + [f_ctx]), axis=0)
+            speaker_obs = torch.Tensor(np.vstack(speaker_obs).astype(np.float)).to(settings.device)   
+            speaker_obs = speaker_obs.unsqueeze(0)
+            speaker_obs = speaker_obs.repeat(num_tests, 1, 1)
+            speaker_obs = speaker_obs.view(3000, -1)
+
+            likelihoods = model.speaker.get_token_dist(speaker_obs)
+            top_comm_idx = np.argmax(likelihoods)
+            top_likelihood = likelihoods[top_comm_idx]
+            label = top_comm_idx if top_likelihood > 0.4 else -1
+            labels.append(label)
     features = np.vstack(dataset)
     label_np = np.reshape(np.array(labels), (-1, 1))
     all_np = np.hstack([label_np, features])
@@ -526,8 +529,7 @@ def train(model, train_data, val_data, viz_data, glove_data, vae, savepath, comm
             # print("Supervised loss", supervised_loss)
 
         if epoch % val_period == val_period - 1:
-            eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics,
-                        savepath, epoch, fieldname, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
+                eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics,savepath, epoch, fieldname, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
 
 def run():
     if settings.see_distractors_pragmatics:
@@ -564,7 +566,8 @@ if __name__ == '__main__':
     feature_len = 512
     settings.see_distractor = False
     settings.see_distractors_pragmatics = True
-    settings.with_ctx_representation = True
+    settings.with_ctx_representation = False
+    settings.eval_someRE = False
     num_distractors = 1
     settings.num_distractors = num_distractors
     n_epochs = 3000
@@ -589,17 +592,16 @@ if __name__ == '__main__':
     test_classes = ['couch', 'counter', 'bowl']
     viz_names = ['airplane', 'plane',
                  'animal', 'cow', 'dog', 'cat']
-    if settings.see_distractors_pragmatics: # EG setup
-        t_features_filename = 'src/data/t_features.csv'
-        settings.d_features_filename = 'src/data/d_features.csv'
-        settings.d_bboxes_filename = 'src/data/d_xyxy.tsv'
-        settings.ctx_features_filename = 'src/data/ctx_features.csv'
-        manynames = load_cleaned_results(filename="src/data/manynames.tsv")
-        someRE = pd.read_csv("src/data/someRE.csv", sep = ";")
-        merged_tmp = pd.merge(manynames, someRE, on=['link_vg'])
-        excluded_ids = [i for i in merged_tmp['vg_image_id']] 
-    else: 
-        features_filename = 'data/features.csv' if with_bbox else 'data/features_nobox.csv'
+    
+    t_features_filename = 'src/data/t_features.csv'
+    settings.d_features_filename = 'src/data/d_features.csv'
+    settings.d_bboxes_filename = 'src/data/d_xyxy.tsv'
+    settings.ctx_features_filename = 'src/data/ctx_features.csv'
+    manynames = load_cleaned_results(filename="src/data/manynames.tsv")
+    someRE = pd.read_csv("src/data/someRE.csv", sep = ";")
+    merged_tmp = pd.merge(manynames, someRE, on=['link_vg'])
+    excluded_ids = [i for i in merged_tmp['vg_image_id']] 
+    
     vae_model = VAE(512, 32)
     vae_model.load_state_dict(torch.load('src/saved_models/vae0.001.pt'))
     vae_model.to(settings.device)
@@ -611,7 +613,7 @@ if __name__ == '__main__':
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    save_loc = 'src/saved_models/' + speaker_type + '/seed' + str(seed) + '/'
+    save_loc = 'src/saved_models/with_ctx/' + speaker_type + '/seed' + str(seed) + '/' if settings.with_ctx_representation else 'src/saved_models/without_ctx/' + speaker_type + '/seed' + str(seed) + '/' 
     glove_data = get_glove_vectors(32)
     run()
 
