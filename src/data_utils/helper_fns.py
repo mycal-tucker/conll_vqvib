@@ -3,7 +3,7 @@ import src.settings as settings
 import torch
 
 
-def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_distractors=False, num_dist=None, preset_targ_idx=None):
+def gen_batch(all_data, batch_size, fieldname, p_dropout=0, vae=None, glove_data=None, see_distractors=False, num_dist=None, preset_targ_idx=None):
     assert glove_data is not None, "Relic argument allowed no glove data, but here we do want it."
     # Given the dataset, creates a batch of inputs.
     # That's:
@@ -11,6 +11,9 @@ def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_di
     # 2) The listener's observation
     # 3) The label (which is the index of the speaker's observation).
     # 4) Word embeddings for the target, if glove_data is not None
+    
+    dropout = torch.nn.Dropout(p=p_dropout)
+
     speaker_obs = []
     listener_obs = []
     labels = []
@@ -49,7 +52,7 @@ def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_di
                 if dist_word in candidate_words and settings.distinct_words:
                     continue  # Already exists, so skip
                 candidate_words.add(dist_word)
-                distractor_features.append(all_features[dist_id])
+                distractor_features.append(all_features[dist_id]) 
         else:
             distractor_features = all_features_dist[targ_idx]
             ctx_features = all_features_ctx[targ_idx]
@@ -94,6 +97,18 @@ def gen_batch(all_data, batch_size, fieldname, vae=None, glove_data=None, see_di
             # listener_tensor, _ = vae(listener_tensor)
             pass
     label_tensor = torch.Tensor(labels).long().to(settings.device)
+    
+    if settings.see_distractors_pragmatics:
+        original_shape = speaker_tensor.shape
+        speaker_tensor = speaker_tensor.view(original_shape[0], original_shape[1] * original_shape[2])
+        # Slicing the tensor to select dimensions corresponding to the distractor, e.g. 512:1024
+        dropout_slice = speaker_tensor[:, original_shape[2]:(original_shape[2] * original_shape[1])]
+        # Applying dropout
+        dropout_tensor = dropout(dropout_slice)
+        # Concatenating the dropout slice with the remaining dimensions
+        speaker_tensor = torch.cat([speaker_tensor[:, :original_shape[2]], dropout_tensor, speaker_tensor[:, (original_shape[2] * original_shape[1]):]], dim=1) 
+        speaker_tensor = speaker_tensor.view(original_shape[0], original_shape[1], original_shape[2])
+
     return speaker_tensor, listener_tensor, label_tensor, embeddings
 
 

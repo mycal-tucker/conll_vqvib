@@ -21,7 +21,7 @@ from src.models.vae import VAE
 from src.models.vq import VQ
 from src.models.mlp import MLP
 from src.models.proto import ProtoNetwork
-from src.utils.mine import get_info
+from src.utils.mine_pragmatics import get_info
 from src.utils.plotting import plot_metrics, plot_naming, plot_scatter
 from src.utils.performance_metrics import PerformanceMetrics
 
@@ -29,7 +29,7 @@ import time
 
 from src.data_utils.read_data import get_glove_vectors
 
-def evaluate(model, dataset, batch_size, vae, glove_data, fieldname, num_dist=None):
+def evaluate(model, dataset, batch_size, p_dropout, vae, glove_data, fieldname, num_dist=None):
     model.eval()
     num_test_batches = 10
     num_correct = 0
@@ -37,18 +37,19 @@ def evaluate(model, dataset, batch_size, vae, glove_data, fieldname, num_dist=No
     num_total = 0
     for _ in range(num_test_batches):
         with torch.no_grad():
-            speaker_obs, listener_obs, labels, _ = gen_batch(dataset, batch_size, fieldname, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor, num_dist=num_dist)
+            speaker_obs, listener_obs, labels, _ = gen_batch(dataset, batch_size, fieldname, p_dropout, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor, num_dist=num_dist)
             outputs, _, _, recons = model(speaker_obs, listener_obs)
             recons = torch.squeeze(recons, dim=1)
         pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
         num_correct += np.sum(pred_labels == labels.cpu().numpy())
         num_total += pred_labels.size
-        total_recons_loss += torch.mean(((speaker_obs - recons) ** 2)).item()
+        total_recons_loss += torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2)).item()
     acc = num_correct / num_total
     total_recons_loss = total_recons_loss / num_test_batches
     print("Evaluation accuracy", acc)
     print("Evaluation recons loss", total_recons_loss)
     return acc, total_recons_loss
+
 
 
 def evaluate_with_english(model, dataset, vae, embed_to_tok, glove_data, fieldname, eng_fieldname=None, use_top=True, num_dist=None, eng_dec=None, eng_list=None,
@@ -199,173 +200,8 @@ def plot_comms(model, dataset, basepath):
 
 
 
-
-def get_embedding_alignment(model, dataset, glove_data, fieldname, test_align_data=None):
-    num_tests = 1
-    comms = []
-    embeddings = []
-    features = []
-    comm_to_id = {}
-    max_num_align_data = settings.max_num_align_data   # FIXME
-   
-    if settings.see_distractors_pragmatics: 
-        for f, f_d, f_ctx, word in zip(dataset['t_features'], dataset['d_features'], dataset['ctx_features'], dataset[fieldname]):
-            s_obs = np.expand_dims(np.vstack([f] + [f_d] + [f_ctx]), axis=0)
-            speaker_obs = torch.Tensor(np.vstack(s_obs).astype(np.float)).to(settings.device)
-            print(speaker_obs.shape)
-            speaker_obs = torch.unsqueeze(speaker_obs, 0)
-            print(speaker_obs.shape)   # FIXME: if we want the translator, fix these shapes
-            with torch.no_grad():
-                speaker_obs = speaker_obs.repeat(num_tests, 1)
-                comm, _, _ = model.speaker(speaker_obs)
-            try:
-                embedding = get_glove_embedding(glove_data, word).to_numpy()
-            except AttributeError:
-                continue
-            np_comm = np.mean(comm.detach().cpu().numpy(), axis=0)
-            comms.append(np_comm)
-
-            dict_comm = tuple(np.round(np_comm, 3))
-            matching_entries = comm_to_id.get(dict_comm)
-            if matching_entries is None:
-                matching_entries = {word: 1}
-                comm_to_id[dict_comm] = matching_entries
-            else:
-                for_word = matching_entries.get(word)
-                if for_word is None:
-                    matching_entries[word] = 1
-                else:
-                    matching_entries[word] += 1
-            embeddings.append(embedding)
-            features.append(np.array(f))
-            if len(embeddings) > max_num_align_data:
-                print("Breaking after", len(embeddings), "examples for word alignment")
-                break
-    else:
-        for f, word in zip(dataset['features'], dataset[fieldname]):
-            speaker_obs = torch.Tensor(np.array(f).astype(np.float)).to(settings.device)
-            speaker_obs = torch.unsqueeze(speaker_obs, 0)
-            with torch.no_grad():
-                speaker_obs = speaker_obs.repeat(num_tests, 1)
-                comm, _, _ = model.speaker(speaker_obs)
-            try:
-                embedding = get_glove_embedding(glove_data, word).to_numpy()
-            except AttributeError:
-                continue
-            np_comm = np.mean(comm.detach().cpu().numpy(), axis=0)
-            comms.append(np_comm)
-
-            dict_comm = tuple(np.round(np_comm, 3))
-            matching_entries = comm_to_id.get(dict_comm)
-            if matching_entries is None:
-                matching_entries = {word: 1}
-                comm_to_id[dict_comm] = matching_entries
-            else:
-                for_word = matching_entries.get(word)
-                if for_word is None:
-                    matching_entries[word] = 1
-                else:
-                    matching_entries[word] += 1
-
-            embeddings.append(embedding)
-            features.append(np.array(f))
-            if len(embeddings) > max_num_align_data:
-                print("Breaking after", len(embeddings), "examples for word alignment")
-                break
-    
-    
-    comms = np.vstack(comms)
-    relevant_comms = comms
-    embeddings = np.vstack(embeddings)
-    # Build a test set
-    test_comms = []
-    test_embeddings = []
-    if test_align_data is None:
-        # print("WARNING!")
-        test_align_data = dataset
-
-    if settings.see_distractors_pragmatics: 
-        for f, f_d, f_ctx, word in zip(test_align_data['t_features'], test_align_data['d_features'], 
-                                       test_align_data['ctx_features'], test_align_data[fieldname]):
-            s_obs = np.expand_dims(np.vstack([f] + [f_d] + [f_ctx]), axis=0)
-            speaker_obs = torch.Tensor(np.vstack(s_obs).astype(np.float)).to(settings.device)
-            speaker_obs = torch.unsqueeze(speaker_obs, 0)
-            with torch.no_grad():
-                speaker_obs = speaker_obs.repeat(num_tests, 1)
-                comm, _, _ = model.speaker(speaker_obs)
-            try:
-                embedding = get_glove_embedding(glove_data, word).to_numpy()
-            except AttributeError:
-                continue
-            np_comm = np.mean(comm.detach().cpu().numpy(), axis=0)
-            test_embeddings.append(embedding)
-            test_comms.append(np_comm)
-            if len(test_embeddings) > max_num_align_data:
-                print("Breaking after", len(embeddings), "examples for word alignment")
-                break
-    else:
-        for f, word in zip(test_align_data['features'], test_align_data[fieldname]):
-            # for f, word in zip(dataset['features'], dataset[fieldname]):
-            speaker_obs = torch.Tensor(np.array(f).astype(np.float)).to(settings.device)
-            speaker_obs = torch.unsqueeze(speaker_obs, 0)
-            with torch.no_grad():
-                speaker_obs = speaker_obs.repeat(num_tests, 1)
-                comm, _, _ = model.speaker(speaker_obs)
-            try:
-                embedding = get_glove_embedding(glove_data, word).to_numpy()
-            except AttributeError:
-                continue
-            np_comm = np.mean(comm.detach().cpu().numpy(), axis=0)
-            test_embeddings.append(embedding)
-            test_comms.append(np_comm)
-            if len(test_embeddings) > max_num_align_data:
-                print("Breaking after", len(embeddings), "examples for word alignment")
-                break
-
-    test_comms = np.vstack(test_comms)
-    test_embeddings = np.vstack(test_embeddings)
-    # Now learn two linear regressions to map to/from tokens and word embeddings.
-    reg1 = LinearRegression()
-    reg1.fit(relevant_comms, embeddings)
-    # tok_to_embed_r2 = reg1.score(relevant_comms, embeddings)
-    train_r2 = reg1.score(relevant_comms, embeddings)
-    tok_to_embed_r2 = reg1.score(test_comms, test_embeddings)
-    pred_embeddings = reg1.predict(test_comms)
-    tok_to_embed_mse = mean_squared_error(test_embeddings, pred_embeddings)
-    # print("Train r2", train_r2)
-    # print("Test r2", tok_to_embed_r2)
-    # print("Test mse", tok_to_embed_mse)
-    # if max_num_align_data != 1:
-    #     print("Tok to word embedding regression score\t\t", tok_to_embed_r2)
-    reg2 = LinearRegression()
-    reg2 = reg2.fit(embeddings, relevant_comms)
-    train_r2 = reg2.score(embeddings, relevant_comms)
-    embed_to_tok_r2 = reg2.score(test_embeddings, test_comms)
-    pred_comms = reg2.predict(test_embeddings)
-    embed_to_tok_mse = mean_squared_error(test_comms, pred_comms)
-    # print("Train eng to ec", train_r2)
-    # print("Test eng to ec", embed_to_tok_r2)
-    # print("Test eng to ec mse", embed_to_tok_mse)
-    # if max_num_align_data != 1:
-    #     print("Word embedding to token regression score\t\t", embed_to_tok_r2)
-    # print("Found", len(comm_to_id), "unique comm vectors!")
-    # Gross. Instead of regression score, pass back the number of unique vectors
-
-    # Turn comm_map into comm to most common associated
-    comm_modes = {}
-    # for ec_comm, word_counts in comm_to_id.items():
-    #     best_word = None
-    #     max_count = 0
-    #     for word, count in word_counts.items():
-    #         if count > max_count:
-    #             max_count = count
-    #             best_word = word
-    #     comm_modes[ec_comm] = best_word
-    return reg1, reg2, tok_to_embed_r2, embed_to_tok_r2, comm_modes
-
-
 def eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics, savepath,
-               epoch, fieldname, calculate_complexity=False, plot_comms_flag=False, alignment_dataset=None, save_model=True):
+               epoch, fieldname, p_dropout, calculate_complexity=False, plot_comms_flag=False, alignment_dataset=None, save_model=True):
     # Create a directory to save information, models, etc.
     basepath = savepath + str(epoch) + '/'
     if not os.path.exists(basepath):
@@ -376,7 +212,7 @@ def eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data,
     # Or we can use MINE to estimate complexity and informativeness.
     if calculate_complexity:
         print("Eval complexity over tons of batches!!! FIXME")
-        train_complexity = get_info(model, train_data, targ_dim=comm_dim, glove_data=glove_data, num_epochs=200)
+        train_complexity = get_info(model, train_data, targ_dim=comm_dim, p_dropout=p_dropout, glove_data=glove_data, num_epochs=200)
         # val_complexity = get_info(model, val_features, targ_dim=comm_dim, comm_targ=True)
         val_complexity = None
         print("Train complexity", train_complexity)
@@ -403,7 +239,7 @@ def eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data,
                     pass  # Just save the values from last time.
                 else:
                     settings.distinct_words = set_distinction
-                    acc, recons = evaluate(model, data, eval_batch_size, vae, glove_data, fieldname=fieldname, num_dist=num_candidates - 1)
+                    acc, recons = evaluate(model, data, eval_batch_size, p_dropout, vae, glove_data, fieldname=fieldname, num_dist=num_candidates - 1)
                 relevant_metrics = num_cand_to_metrics.get(set_distinction).get(num_candidates)[feature_idx]
                 relevant_metrics.add_data(epoch, complexities[feature_idx], -1 * recons, acc, settings.kl_weight)
 
@@ -441,39 +277,11 @@ def eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data,
     torch.save(model, basepath + 'model_obj.pt')
 
 
-def get_supervised_data(train_data, num_examples, glove_data, vae):
-    speaker_obs = []
-    embs = []
-    for i in range(len(train_data)):
-        if len(embs) == num_examples:
-            break
-        # Fieldname doesn't matter if only doing things for the listener
-        obs, _, _, emb = gen_batch(train_data, 1, fieldname='topname', glove_data=glove_data, vae=vae, num_dist=0, preset_targ_idx=i)
-        if emb[0] is not None:  # It's a list
-            embs.append(emb)
-            speaker_obs.append(obs.cpu())  # Put on the cpu to get into numpy for moving. Awkward, I know, but whatever.
-    speaker_obs = torch.Tensor(np.vstack(speaker_obs)).to(settings.device)
-    embs = torch.Tensor(np.vstack(embs)).to(settings.device)
-    return [speaker_obs, embs]
 
-
-def get_super_loss(supervised_data, speaker):
-    supervision_crit = nn.MSELoss()
-    speaker.eval_mode = True
-    comms, _, _ = speaker(supervised_data[0])
-    speaker.eval_mode = False
-    supervised_loss = supervision_crit(comms, supervised_data[1])
-    # print("Supervised loss", supervised_loss)
-    return supervised_loss
-
-
-def train(model, train_data, val_data, viz_data, glove_data, vae, savepath, comm_dim, fieldname, num_epochs=3000, batch_size=1024, burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
-
-    unique_topnames, _ = get_unique_labels(train_data)
-#    sup_dataset = pd.concat([get_entry_for_labels(train_data, unique_topnames) for _ in range(3)])
-#    sup_dataset = sup_dataset.sample(frac=1).reset_index(drop=True)  # Shuffle the data.
-#    supervised_data = get_supervised_data(sup_dataset, 2, glove_data, vae)
+def train(model, train_data, val_data, viz_data, glove_data, p_dropout, vae, savepath, comm_dim, fieldname, num_epochs=3000, batch_size=1024, burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
     
+    unique_topnames, _ = get_unique_labels(train_data)
+
     criterion = nn.CrossEntropyLoss()
     # optimizer = optim.Adam(model.parameters(), lr=0.0001)  # 0.0001 is good for no recons, or for onehot things.
     optimizer = optim.Adam(model.parameters(), lr=0.001)  # 0.001 is good for alpha 10 (and is the default)
@@ -491,16 +299,13 @@ def train(model, train_data, val_data, viz_data, glove_data, vae, savepath, comm
         if epoch > burnin_epochs:
             settings.kl_weight += settings.kl_incr
 
-        speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
+        speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, p_dropout, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
         start_time = time.time()
         optimizer.zero_grad()
         outputs, speaker_loss, info, recons = model(speaker_obs, listener_obs)
 
         loss = criterion(outputs, labels)
-#        supervised_loss = 0
-#        if settings.supervision_weight != 0:  # Don't even bother computing the loss if it's not used.
-#            supervised_loss = get_super_loss(supervised_data, model.speaker)
-#            loss = loss + settings.supervision_weight * supervised_loss
+  
         if len(speaker_obs.shape) == 2:
             speaker_obs = torch.unsqueeze(speaker_obs, 1)
         recons_loss = torch.mean(((speaker_obs - recons) ** 2))
@@ -529,27 +334,17 @@ def train(model, train_data, val_data, viz_data, glove_data, vae, savepath, comm
             # print("Supervised loss", supervised_loss)
 
         if epoch % val_period == val_period - 1:
-                eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics,savepath, epoch, fieldname, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
+                eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics, savepath, epoch, fieldname, p_dropout, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
+
+
 
 def run():
     if settings.see_distractors_pragmatics:
         num_imgs = 3 if settings.with_ctx_representation else 2
     else:
         num_imgs = 1 if not settings.see_distractor else (num_distractors + 1)
-    if speaker_type == 'cont':
-        speaker = MLP(feature_len, c_dim, num_layers=3, onehot=False, variational=variational, num_imgs=num_imgs)
-    elif speaker_type == 'onehot':
-        speaker = MLP(feature_len, c_dim, num_layers=3, onehot=True, variational=variational, num_imgs=num_imgs)
-    elif speaker_type == 'vq':
-        # speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=1763, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
-        speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=32, num_simultaneous_tokens=8, variational=variational, num_imgs=num_imgs)
-    if settings.see_distractors_pragmatics:
-        listener = ListenerPragmatics(feature_len + num_imgs * feature_len, num_distractors+1, num_imgs=num_imgs)
-    else:
-        listener = Listener(feature_len)
+    listener = ListenerPragmatics(feature_len + num_imgs * feature_len, num_distractors+1, num_imgs=num_imgs)
     decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
-    model = Team(speaker, listener, decoder)
-    model.to(settings.device)
 
     data = get_feature_data(t_features_filename, excluded_ids=excluded_ids)
     data = data.sample(frac=1) # Shuffle the data.
@@ -559,7 +354,15 @@ def run():
     train_data, test_data, val_data = train_data.sample(frac=1).reset_index(), test_data.sample(frac=1).reset_index(), val_data.sample(frac=1).reset_index() 
     print("Len train set:",len(train_data), "Len val set:", len(val_data), "Len test set:", len(test_data))
     viz_data = train_data  # For debugging, it's faster to just reuse datasets
-    train(model, train_data, val_data, viz_data, glove_data=glove_data, vae=vae_model, savepath=save_loc, comm_dim=c_dim, fieldname='topname', num_epochs=n_epochs, batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
+    
+    speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=32, num_simultaneous_tokens=8, variational=variational, num_imgs=num_imgs)
+        
+    model = Team(speaker, listener, decoder)
+    model.to(settings.device)
+    
+    for p in settings.p_dropouts:
+        save_loc = 'src/saved_models/with_ctx/kl_weight' + str(settings.kl_weight) + '/p_dropout' + str(p) + '/seed' + str(seed) + '/' if settings.with_ctx_representation else 'src/saved_models/without_ctx/kl_weight' + str(settings.kl_weight) + '/p_dropout' + str(p) + '/seed' + str(seed) + '/'
+        train(model, train_data, val_data, viz_data, glove_data=glove_data, p_dropout=p, vae=vae_model, savepath=save_loc, comm_dim=c_dim, fieldname='topname', num_epochs=n_epochs, batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
 
 
 if __name__ == '__main__':
@@ -580,7 +383,8 @@ if __name__ == '__main__':
     do_calc_complexity = True
     do_plot_comms = False
     settings.alpha = 1
-    settings.kl_weight = 0.0  # For cont
+    settings.p_dropouts = [0.01, 0.05, 0.1, 0.3, 0.5, 0.7, 0.9]
+    settings.kl_weight = 0.1  
     settings.kl_incr = 0.0
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -612,8 +416,6 @@ if __name__ == '__main__':
     seed = 0
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    save_loc = 'src/saved_models/with_ctx/' + speaker_type + '/seed' + str(seed) + '/' if settings.with_ctx_representation else 'src/saved_models/without_ctx/' + speaker_type + '/seed' + str(seed) + '/' 
     glove_data = get_glove_vectors(32)
     run()
 

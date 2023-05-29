@@ -142,6 +142,16 @@ class VQ(nn.Module):
     def forward(self, x):
         embedded_features = self.feature_embedder(x)
         x = torch.reshape(embedded_features, (-1, self.hidden_dim * self.num_imgs))
+#        # Slicing the tensor to select dimensions corresponding to the distractor
+#        dropout_slice = x[:, 64:128]
+#        # Creating a dropout module and applying it to the selected slice
+#        dropout = torch.nn.Dropout(p=self.p_dropout)
+#        dropout_tensor = dropout(dropout_slice)
+#        # Concatenating the dropout slice with the remaining dimensions
+#        if settings.with_ctx_representation:
+#            x = torch.cat([x[:, :64], dropout_tensor, x[:, 128:]], dim=1)
+#        else:
+#            x = torch.cat([x[:, :64], dropout_tensor], dim=1)
         for i, layer in enumerate(self.layers):
             x = layer(x)
             x = F.relu(x)

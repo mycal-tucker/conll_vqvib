@@ -452,8 +452,9 @@ def get_feature_data(features_filename,
         if data_rows[-1] == ('', []):
             del data_rows[-1]
         feature_df['ctx_features'] = [i[1] for i in data_rows]
-        f = pd.read_table(settings.d_bboxes_filename, header=None)
-        feature_df['dist_xyxy'] = [i for i in f[3]] 
+        if not settings.eval_someRE:
+            f = pd.read_table(settings.d_bboxes_filename, header=None)
+            feature_df['dist_xyxy'] = [i for i in f[3]] 
         merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
         merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
         if not settings.eval_someRE:
