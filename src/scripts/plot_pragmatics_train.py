@@ -2,8 +2,8 @@ import matplotlib.pyplot as plt
 from src.utils.performance_metrics import PerformanceMetrics
 
 
-with_ctx_dir = "src/saved_models/with_ctx/vq/seed0/2999/train_True_2_metrics"
-without_ctx_dir = "src/saved_models/without_ctx/vq/seed0/2999/train_True_2_metrics"
+with_ctx_dir = "src/saved_models/with_ctx/vq/seed1/2999/train_True_2_metrics"
+without_ctx_dir = "src/saved_models/without_ctx/vq/seed1/2999/train_True_2_metrics"
 save_path = "Plots/"
 
 metrics_with = PerformanceMetrics.from_file(with_ctx_dir)

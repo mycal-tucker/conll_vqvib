@@ -1,3 +1,5 @@
+import numpy as np
+import random
 import torch
 import torch.optim as optim
 
@@ -14,7 +16,7 @@ def run():
     optimizer = optim.Adam(model.parameters())
     running_loss = 0
     for epoch in range(num_epochs):
-        features, _, _, _ = gen_batch(train_data, batch_size, glove_data=glove_data, fieldname='topname')  # Fieldname doesn't matter
+        features, _, _, _ = gen_batch(train_data, batch_size, p_notseedist=0, glove_data=glove_data, fieldname='topname')  # Fieldname doesn't matter
         optimizer.zero_grad()
         reconstruction, loss = model(features)
         loss.backward()
@@ -37,4 +39,10 @@ if __name__ == '__main__':
     settings.num_distractors = 1
     settings.embedding_cache = {}
     settings.distinct_words = False
+    
+    seed = 0
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
     run()

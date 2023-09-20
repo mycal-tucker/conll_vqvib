@@ -25,25 +25,30 @@ class Net(nn.Module):
         return output
 
 
-def get_info(model, dataset, targ_dim, p_dropout, glove_data=None, num_epochs=200, batch_size=1024):
+
+def get_info(model, dataset, targ_dim, glove_data=None, num_epochs=200, batch_size=1024):
     # Define a network that takes in the two variables to calculate the MI of.
-    if settings.with_ctx_representation:
-        mine_net = Net(512 * (settings.num_distractors+2), targ_dim)
+    if settings.see_distractors_pragmatics:
+        if settings.with_ctx_representation:
+            mine_net = Net(512 * (settings.num_distractors+2), targ_dim)
+        else:
+            mine_net = Net(512 * (settings.num_distractors+1), targ_dim)
     else:
-        mine_net = Net(512 * (settings.num_distractors+1), targ_dim)
+        mine_net = Net(512, targ_dim)
     mine_net.to(settings.device)
     optimizer = optim.Adam(mine_net.parameters())
     running_loss = 0
     for epoch in range(num_epochs):
-        speaker_obs, _, _, _ = gen_batch(dataset, batch_size, p_dropout=p_dropout, fieldname='topname', glove_data=glove_data)
+        speaker_obs, _, _, _ = gen_batch(dataset, batch_size, p_dropout=1, fieldname='topname', glove_data=glove_data)
         with torch.no_grad():
             targ_var, _, _ = model.speaker(speaker_obs)  # Communication
-        
+
         # Shuffle the target variable so we can get a marginal of sorts.
         targ_shuffle = torch.Tensor(np.random.permutation(targ_var.cpu().numpy())).to(settings.device)
         optimizer.zero_grad()
-        
-        speaker_obs = speaker_obs.view(batch_size, -1)
+
+        if settings.see_distractors_pragmatics:
+            speaker_obs = speaker_obs.view(batch_size, -1)
         pred_xy = mine_net(speaker_obs, targ_var)
         pred_x_y = mine_net(speaker_obs, targ_shuffle)
         ret = torch.mean(pred_xy) - torch.log(torch.mean(torch.exp(pred_x_y)))
@@ -57,13 +62,14 @@ def get_info(model, dataset, targ_dim, p_dropout, glove_data=None, num_epochs=20
     summed_loss = 0
     num_eval_epochs = 20
     for epoch in range(num_eval_epochs):
-        speaker_obs, _, _, _ = gen_batch(dataset, 1024, p_dropout=p_dropout, fieldname='topname', glove_data=glove_data)
+        speaker_obs, _, _, _ = gen_batch(dataset, 1024, fieldname='topname', glove_data=glove_data)
         with torch.no_grad():
             targ_var, _, _ = model.speaker(speaker_obs)  # Communication
         targ_shuffle = torch.Tensor(np.random.permutation(targ_var.cpu().numpy())).to(settings.device)
         optimizer.zero_grad()
-        
-        speaker_obs = speaker_obs.view(batch_size, -1)
+
+        if settings.see_distractors_pragmatics:
+            speaker_obs = speaker_obs.view(batch_size, -1)
         pred_xy = mine_net(speaker_obs, targ_var)
         pred_x_y = mine_net(speaker_obs, targ_shuffle)
         ret = torch.mean(pred_xy) - torch.log(torch.mean(torch.exp(pred_x_y)))
@@ -71,4 +77,95 @@ def get_info(model, dataset, targ_dim, p_dropout, glove_data=None, num_epochs=20
     mutual_info = summed_loss / num_eval_epochs
     return mutual_info
 
+
+
+def get_cond_info(model, dataset, targ_dim, p_notseedist, glove_data=None, num_epochs=200, batch_size=1024):
+    # Define a network that takes in the two variables to calculate the MI of.
+    if settings.with_ctx_representation:
+        mine_net = Net(512 * (settings.num_distractors+2), targ_dim)
+    else:
+        mine_net = Net(512 * (settings.num_distractors+1), targ_dim)
+    mine_net.to(settings.device)
+    optimizer = optim.Adam(mine_net.parameters())
+    running_loss = 0
+
+    # word = x
+    # target = y
+    # distractor = z
+    # goal = p(x,y|z)
+
+    for epoch in range(num_epochs):
+        speaker_obs, _, _, _ = gen_batch(dataset, batch_size, p_notseedist=p_notseedist, fieldname='topname', glove_data=glove_data)
+    
+        # Get communication
+        with torch.no_grad():
+            comm, _, _ = model.speaker(speaker_obs)  
+
+        # Shuffle the target variable so we can get a marginal of sorts.
+        comm_shuffle = torch.Tensor(np.random.permutation(comm.cpu().numpy())).to(settings.device)
+        optimizer.zero_grad()
+        speaker_obs = speaker_obs.view(batch_size, -1)
+
+        pred_xy = mine_net(speaker_obs, comm)
+        pred_x_y = mine_net(speaker_obs, comm_shuffle)
+
+        ret = torch.mean(pred_xy) - torch.log(torch.mean(torch.exp(pred_x_y)))
+        loss = -ret  # maximize
+        loss.backward()
+        optimizer.step()
+        running_loss = 0.95 * running_loss + 0.05 * loss.item()
+        if epoch % 100 == 0:
+            print(running_loss)
+
+
+    summed_loss_xz = 0
+    summed_loss_xz1 = 0
+    num_eval_epochs = 20
+    
+    for epoch in range(num_eval_epochs):
+        speaker_obs_batch, _, _, _ = gen_batch(dataset, batch_size, p_notseedist=p_notseedist, fieldname='topname', glove_data=glove_data)
+        
+        # Compute I(X; Z1) = I(X; Y,Z)
+        with torch.no_grad():
+            comm_z1, _, _ = model.speaker(speaker_obs_batch)
+        comm_z1_shuffle = torch.Tensor(np.random.permutation(comm_z1.cpu().numpy())).to(settings.device)
+        optimizer.zero_grad()
+        speaker_obs = speaker_obs_batch.view(batch_size, -1)
+
+        pred_xz1 = mine_net(speaker_obs, comm_z1)
+        pred_x_z1 = mine_net(speaker_obs, comm_z1_shuffle)
+        ret = torch.mean(pred_xz1) - torch.log(torch.mean(torch.exp(pred_x_z1)))
+        
+        summed_loss_xz1 += ret.item()
+
+        # Compute I(X;Z)
+        # swap target and distractor: now the distractor is in target position
+        speaker_obs_batch[:, [0, 1]] = speaker_obs_batch[:, [1, 0]]
+        # mask the target
+        mask = torch.ones_like(speaker_obs_batch)
+        mask[:, 1, :] = 0
+        speaker_obs_batch = speaker_obs_batch * mask
+        #speaker_obs = speaker_obs_batch.view(batch_size, -1)
+        
+        # Get communication
+        with torch.no_grad():
+            comm_z, _, _ = model.speaker(speaker_obs_batch)
+
+        comm_z_shuffle = torch.Tensor(np.random.permutation(comm_z.cpu().numpy())).to(settings.device)
+        optimizer.zero_grad()
+        speaker_obs = speaker_obs_batch.view(batch_size, -1)
+
+        pred_xz = mine_net(speaker_obs, comm_z)
+        pred_x_z = mine_net(speaker_obs, comm_z_shuffle)
+        ret = torch.mean(pred_xz) - torch.log(torch.mean(torch.exp(pred_x_z)))
+        summed_loss_xz += ret.item()
+
+    mutual_info_XZ = summed_loss_xz / num_eval_epochs
+    mutual_info_XZ1 = summed_loss_xz1 / num_eval_epochs
+   
+    conditional_MI = mutual_info_XZ1 - mutual_info_XZ
+    
+    return conditional_MI
+
+        
 

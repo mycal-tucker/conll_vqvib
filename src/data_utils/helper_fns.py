@@ -3,7 +3,7 @@ import src.settings as settings
 import torch
 
 
-def gen_batch(all_data, batch_size, fieldname, p_dropout=0, vae=None, glove_data=None, see_distractors=False, num_dist=None, preset_targ_idx=None):
+def gen_batch(all_data, batch_size, fieldname, p_notseedist=0, vae=None, glove_data=None, see_distractors=False, num_dist=None, preset_targ_idx=None):
     assert glove_data is not None, "Relic argument allowed no glove data, but here we do want it."
     # Given the dataset, creates a batch of inputs.
     # That's:
@@ -11,8 +11,6 @@ def gen_batch(all_data, batch_size, fieldname, p_dropout=0, vae=None, glove_data
     # 2) The listener's observation
     # 3) The label (which is the index of the speaker's observation).
     # 4) Word embeddings for the target, if glove_data is not None
-    
-    dropout = torch.nn.Dropout(p=p_dropout)
 
     speaker_obs = []
     listener_obs = []
@@ -99,16 +97,32 @@ def gen_batch(all_data, batch_size, fieldname, p_dropout=0, vae=None, glove_data
     label_tensor = torch.Tensor(labels).long().to(settings.device)
     
     if settings.see_distractors_pragmatics:
-        original_shape = speaker_tensor.shape
-        speaker_tensor = speaker_tensor.view(original_shape[0], original_shape[1] * original_shape[2])
-        # Slicing the tensor to select dimensions corresponding to the distractor, e.g. 512:1024
-        dropout_slice = speaker_tensor[:, original_shape[2]:(original_shape[2] * original_shape[1])]
-        # Applying dropout
-        dropout_tensor = dropout(dropout_slice)
-        # Concatenating the dropout slice with the remaining dimensions
-        speaker_tensor = torch.cat([speaker_tensor[:, :original_shape[2]], dropout_tensor, speaker_tensor[:, (original_shape[2] * original_shape[1]):]], dim=1) 
-        speaker_tensor = speaker_tensor.view(original_shape[0], original_shape[1], original_shape[2])
-
+        
+        # if we add uncertainty with dropout layer
+        if settings.dropout:
+            original_shape = speaker_tensor.shape
+            speaker_tensor = speaker_tensor.view(original_shape[0], original_shape[1] * original_shape[2])
+            # Slicing the tensor to select dimensions corresponding to the distractor, e.g. 512:1024
+            dropout_slice = speaker_tensor[:, original_shape[2]:(original_shape[2] * original_shape[1])]
+            # Applying dropout
+            dropout = torch.nn.Dropout(p=p_notseedist)
+            dropout_tensor = dropout(dropout_slice)
+            # Concatenating the dropout slice with the remaining dimensions
+            speaker_tensor = torch.cat([speaker_tensor[:, :original_shape[2]], dropout_tensor, speaker_tensor[:, (original_shape[2] * original_shape[1]):]], dim=1) 
+            speaker_tensor = speaker_tensor.view(original_shape[0], original_shape[1], original_shape[2])
+        
+        # if we implement probability of seeing the distractor
+        elif settings.see_probabilities:
+            # Create a mask of the same shape as the tensor
+            mask = torch.ones_like(speaker_tensor, dtype=bool)
+            # Generate random indices to apply the mask
+            num_tensors = speaker_tensor.shape[0]
+            indices = np.random.choice(num_tensors, int(num_tensors * p_notseedist), replace=False)
+            # Apply the mask to the selected indices
+            mask[indices, 1, :] = False
+            # Apply the mask to the tensor
+            speaker_tensor = torch.where(mask, speaker_tensor, torch.tensor(0.0, device=settings.device))
+     
     return speaker_tensor, listener_tensor, label_tensor, embeddings
 
 

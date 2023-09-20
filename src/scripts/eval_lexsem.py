@@ -434,20 +434,20 @@ def run():
             save_eval_path = model_to_eval_path + '/evaluation/'
             model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
             model.to(settings.device)
-        
-            print("Pragmatic task") 
+           
+            print("Lexical semantics task") 
             num_cand_to_metrics = {True: {2: []}}
             for empty_list in num_cand_to_metrics.get(True).values():
                 empty_list.extend([PerformanceMetrics()])
-            eval_model_pragmatics(model, vae_model, c_dim, val_data, viz_data, glove_data, num_cand_to_metrics, save_eval_path, fieldname='topname', calculate_complexity=do_calc_complexity, plot_comms_flag=do_plot_comms)
-    
+            eval_model_lexsem(model, vae_model, c_dim, val_data, viz_data, glove_data, num_cand_to_metrics, save_eval_path, fieldname='topname', calculate_complexity=do_calc_complexity, plot_comms_flag=do_plot_comms)
+   
 
 if __name__ == '__main__':
     feature_len = 512
     settings.see_distractor = False
     settings.see_distractors_pragmatics = True
 
-    settings.with_ctx_representation = True   
+    settings.with_ctx_representation = True    
     settings.prob_notseedist = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
     settings.dropout = False
     settings.see_probabilities = True
