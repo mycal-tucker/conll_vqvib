@@ -358,7 +358,7 @@ def run():
     print("Len train set:",len(train_data), "Len val set:", len(val_data), "Len test set:", len(test_data))
     viz_data = train_data  # For debugging, it's faster to just reuse datasets
     
-    speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=32, num_simultaneous_tokens=8, variational=variational, num_imgs=num_imgs)
+    speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
         
     model = Team(speaker, listener, decoder)
     model.to(settings.device)
@@ -386,8 +386,8 @@ if __name__ == '__main__':
         settings.see_distractor = False # Mycal's one
     
     settings.with_ctx_representation = False
-    settings.dropout = True
-    settings.see_probabilities = False
+    settings.dropout = False
+    settings.see_probabilities = True
     
     settings.eval_someRE = False
     
@@ -399,12 +399,13 @@ if __name__ == '__main__':
     b_size = 1024
     c_dim = 128
     variational = True
+    settings.num_protos = 442 # 442 is the number of topnames in MN 
     # Measuring complexity takes a lot of time. For debugging other features, set to false.
     do_calc_complexity = True
     do_plot_comms = False
     settings.alpha = 1
     settings.prob_notseedist = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
-    settings.kl_weight = 0.1 # CHANGE if wanted  
+    settings.kl_weight = 0.5 # CHANGE if wanted  
     settings.kl_incr = 0.0
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'

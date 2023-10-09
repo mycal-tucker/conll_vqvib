@@ -32,7 +32,7 @@ def visualize_solution(dataset, team, num_examples, save_path, sampled_id):
     # Given a dataset and a team, returns a list of EC comms for some entries in the data,
     # as well as the English words for each of those entries.
 
-    # PRAGMATICS
+    # LEXICAL-SEMANTICS
     ids_to_comms = {}
     img_infos = {}
     for targ_idx in list(dataset.index.values):
@@ -43,7 +43,7 @@ def visualize_solution(dataset, team, num_examples, save_path, sampled_id):
         tar_topname = dataset['topname'][targ_idx]
         img_infos[vg_image_id] = [tar_xyxy, dist_xyxy, tar_topname]
 
-        speaker_obs, _, _, _ = gen_batch(dataset, 1, fieldname, p_notseedist=0, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors, preset_targ_idx=targ_idx)
+        speaker_obs, _, _, _ = gen_batch(dataset, 1, fieldname, p_notseedist=1, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors, preset_targ_idx=targ_idx)
         
         if speaker_obs != None:
             # Now get the EC for that speaker obs
@@ -57,149 +57,166 @@ def visualize_solution(dataset, team, num_examples, save_path, sampled_id):
 
     arrays = np.array(list(ids_to_comms.values()))
     matrix = cosine_similarity(arrays)
-    print(np.argwhere(matrix > 0.95))
+    #print(np.argwhere(matrix > 0.95))
     df_matrix = pd.DataFrame(matrix)
     df_matrix.columns = list(ids_to_comms.keys())
     df_matrix.index = list(ids_to_comms.keys())
     
     row_values = df_matrix.loc[sampled_id]
-    top_columns = list(row_values.nlargest(10).index)
-    top_columns.remove(sampled_id)  # make sure that the sampled_id is in first position (in case there are multiple comm vectors with sim=1)
-    top_columns.insert(0, sampled_id)
-    info_to_write = [str(round(i,3)) for i in row_values.nlargest(10)]
-    info_to_write[0] = img_infos[sampled_id][2]
-    targets = [img_infos[i][0] for i in top_columns]
-    distractors = [ast.literal_eval(img_infos[i][1]) for i in top_columns]
+    top_columns = list(row_values[row_values > 0.99].index)
+    if len(top_columns) > 1:
+        #top_columns = list(row_values.nlargest(10).index)
+        top_columns.remove(sampled_id)  # make sure that the sampled_id is in first position (in case there are multiple comm vectors with sim=1)
+        top_columns.insert(0, sampled_id)
+        info_to_write = [str(round(i,2)) for i in row_values[row_values > 0.99]]
+        #info_to_write = [str(round(i,3)) for i in row_values.nlargest(10)]
+        info_to_write[0] = img_infos[sampled_id][2]
+        targets = [img_infos[i][0] for i in top_columns]
+        distractors = [ast.literal_eval(img_infos[i][1]) for i in top_columns]
 
 #### PLOT: images with closest communication vector
-    fig, axes = plt.subplots(nrows=2, ncols=5, figsize=(10, 6))
-    for i, ax in enumerate(axes.flat):
-        if i < len(top_columns):
-            # Load and display the image
-            image_path = image_directory + top_columns[i] + ".jpg"
-            #img = mpimg.imread(image_path)
-            img = Image.open(image_path)
-            ax.imshow(img)
+        fig, axes = plt.subplots(nrows=2, ncols=5, figsize=(10, 6))
+        for i, ax in enumerate(axes.flat):
+            if i < len(top_columns):
+                # Load and display the image
+                image_path = image_directory + top_columns[i] + ".jpg"
+                #img = mpimg.imread(image_path)
+                img = Image.open(image_path)
+                ax.imshow(img)
             
-            # draw distractor
-            draw = ImageDraw.Draw(img)
-            red =  (255, 0, 0)
-            t_coord = [(targets[i][0], targets[i][1]), (targets[i][2], targets[i][3])]
-            draw.rectangle(t_coord, outline=red, width=4)
+                # draw target
+                draw = ImageDraw.Draw(img)
+                red =  (255, 0, 0)
+                t_coord = [(targets[i][0], targets[i][1]), (targets[i][2], targets[i][3])]
+                draw.rectangle(t_coord, outline=red, width=4)
 
-            # draw target
-            draw = ImageDraw.Draw(img)
-            blue =  (0, 0, 255)
-            d_coord = [(distractors[i][0], distractors[i][1]), (distractors[i][2], distractors[i][3])]
-            draw.rectangle(d_coord, outline=blue, width=4)
+                # draw distractor
+                #draw = ImageDraw.Draw(img)
+                #blue =  (0, 0, 255)
+                #d_coord = [(distractors[i][0], distractors[i][1]), (distractors[i][2], distractors[i][3])]
+                #draw.rectangle(d_coord, outline=blue, width=4)
 
-            ax.imshow(img)
+                ax.imshow(img)
 
-            ax.axis('off')  # Turn off the axis labels for cleaner display
-            ax.text(0.5, 1.05, info_to_write[i], horizontalalignment='center', verticalalignment='center', transform=ax.transAxes, fontsize=12, color='black')
+                ax.axis('off')  # Turn off the axis labels for cleaner display
+                ax.text(0.5, 1.05, info_to_write[i], horizontalalignment='center', verticalalignment='center', transform=ax.transAxes, fontsize=12, color='black')
 
-        else:
-            # Remove any unused subplots
-            fig.delaxes(ax)
+            else:
+                # Remove any unused subplots
+                fig.delaxes(ax)
     
-    plt.suptitle("Pragmatics")    
-    plt.tight_layout()
-    if viz_topname:
-        plt.savefig(save_path + "top_comm_"+viz_topname+"_"+sampled_id+"_pragmatics.jpg")
-    else:
-        plt.savefig(save_path + "top_comm_"+sampled_id+"_pragmatics.jpg")
+        plt.suptitle("Lexical-semantics")    
+        plt.tight_layout()
+        if viz_topname:
+            plt.savefig(save_path + "top_comm_"+viz_topname+"_"+sampled_id+"_lexsem.jpg")
+        else:
+            plt.savefig(save_path + "top_comm_"+sampled_id+"_lexsem.jpg")
 
-    # LEXICAL SEMANTICS
-    ids_to_comms = {}
-    img_infos = {}
-    for targ_idx in list(dataset.index.values):
-        vg_image_id = dataset['vg_image_id'][targ_idx]
-        tar_xywh = dataset['bbox_xywh'][targ_idx]
-        tar_xyxy = [tar_xywh[0], tar_xywh[1], tar_xywh[0]+tar_xywh[2], tar_xywh[1]+tar_xywh[3]]
-        dist_xyxy = dataset['dist_xyxy'][targ_idx]
-        tar_topname = dataset['topname'][targ_idx]
-        img_infos[vg_image_id] = [tar_xyxy, dist_xyxy, tar_topname]
+        # PRAGMATICS
+        ids_to_comms = {}
+        img_infos = {}
+        for targ_idx in list(dataset.index.values):
+            vg_image_id = dataset['vg_image_id'][targ_idx]
+            tar_xywh = dataset['bbox_xywh'][targ_idx]
+            tar_xyxy = [tar_xywh[0], tar_xywh[1], tar_xywh[0]+tar_xywh[2], tar_xywh[1]+tar_xywh[3]]
+            dist_xyxy = dataset['dist_xyxy'][targ_idx]
+            tar_topname = dataset['topname'][targ_idx]
+            img_infos[vg_image_id] = [tar_xyxy, dist_xyxy, tar_topname]
 
-        speaker_obs, _, _, _ = gen_batch(dataset, 1, fieldname, p_notseedist=1, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors, preset_targ_idx=targ_idx)
+            speaker_obs, _, _, _ = gen_batch(dataset, 1, fieldname, p_notseedist=0, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors, preset_targ_idx=targ_idx)
 
-        if speaker_obs != None:
-            # Now get the EC for that speaker obs
-            with torch.no_grad():
-                comm, _, _ = team.speaker(speaker_obs)
-                np_comm = comm.detach().cpu().numpy()
-                # comms.append(np_comm)
-                ids_to_comms[vg_image_id] = np_comm[0]
-        else : # there is no Glove embedding for that preset_targ_idx
-            pass
+            if speaker_obs != None:
+                # Now get the EC for that speaker obs
+                with torch.no_grad():
+                    comm, _, _ = team.speaker(speaker_obs)
+                    np_comm = comm.detach().cpu().numpy()
+                    # comms.append(np_comm)
+                    ids_to_comms[vg_image_id] = np_comm[0]
+            else : # there is no Glove embedding for that preset_targ_idx
+                pass
 
-    arrays = np.array(list(ids_to_comms.values()))
-    matrix = cosine_similarity(arrays)
-    df_matrix = pd.DataFrame(matrix)
-    df_matrix.columns = list(ids_to_comms.keys())
-    df_matrix.index = list(ids_to_comms.keys())
+        arrays = np.array(list(ids_to_comms.values()))
+        matrix = cosine_similarity(arrays)
+        df_matrix = pd.DataFrame(matrix)
+        df_matrix.columns = list(ids_to_comms.keys())
+        df_matrix.index = list(ids_to_comms.keys())
 
-    row_values = df_matrix.loc[sampled_id]
-    top_columns = list(row_values.nlargest(10).index)
-    top_columns.remove(sampled_id)  # make sure that the sampled_id is in first position (in case there are multiple comm vectors with sim=1)
-    top_columns.insert(0, sampled_id)
-    info_to_write = [str(round(i,3)) for i in row_values.nlargest(10)]
-    info_to_write[0] = img_infos[sampled_id][2]
-    targets = [img_infos[i][0] for i in top_columns]
-    distractors = [ast.literal_eval(img_infos[i][1]) for i in top_columns]
+        row_values = df_matrix.loc[sampled_id]
+        top_columns = list(row_values[row_values > 0.99].index)
+        #top_columns = list(row_values.nlargest(10).index)
+        top_columns.remove(sampled_id)  # make sure that the sampled_id is in first position (in case there are multiple comm vectors with sim=1)
+        top_columns.insert(0, sampled_id)
+        info_to_write = [str(round(i,2)) for i in row_values[row_values > 0.99]]
+        #info_to_write = [str(round(i,3)) for i in row_values.nlargest(10)]
+        info_to_write[0] = img_infos[sampled_id][2]
+        targets = [img_infos[i][0] for i in top_columns]
+        distractors = [ast.literal_eval(img_infos[i][1]) for i in top_columns]
 
 #### PLOT: images with closest communication vector
-    fig, axes = plt.subplots(nrows=2, ncols=5, figsize=(10, 6))
-    for i, ax in enumerate(axes.flat):
-        if i < len(top_columns):
-            # Load and display the image
-            image_path = image_directory + top_columns[i] + ".jpg"
-            #img = mpimg.imread(image_path)
-            img = Image.open(image_path)
-            ax.imshow(img)
+        fig, axes = plt.subplots(nrows=2, ncols=5, figsize=(10, 6))
+        for i, ax in enumerate(axes.flat):
+            if i < len(top_columns):
+                # Load and display the image
+                image_path = image_directory + top_columns[i] + ".jpg"
+                #img = mpimg.imread(image_path)
+                img = Image.open(image_path)
+                ax.imshow(img)
 
-            # draw target
-            draw = ImageDraw.Draw(img)
-            red =  (255, 0, 0)
-            t_coord = [(targets[i][0], targets[i][1]), (targets[i][2], targets[i][3])]
-            draw.rectangle(t_coord, outline=red, width=4)
+                # draw target
+                draw = ImageDraw.Draw(img)
+                red =  (255, 0, 0)
+                t_coord = [(targets[i][0], targets[i][1]), (targets[i][2], targets[i][3])]
+                draw.rectangle(t_coord, outline=red, width=4)
 
-            ax.imshow(img)
+                # draw distractor
+                draw = ImageDraw.Draw(img)
+                blue =  (0, 0, 255)
+                d_coord = [(distractors[i][0], distractors[i][1]), (distractors[i][2], distractors[i][3])]
+                draw.rectangle(d_coord, outline=blue, width=4)
 
-            ax.axis('off')  # Turn off the axis labels for cleaner display
-            ax.text(0.5, 1.05, info_to_write[i], horizontalalignment='center', verticalalignment='center', transform=ax.transAxes, fontsize=12, color='black')
+                ax.imshow(img)
 
+                ax.axis('off')  # Turn off the axis labels for cleaner display
+                ax.text(0.5, 1.05, info_to_write[i], horizontalalignment='center', verticalalignment='center', transform=ax.transAxes, fontsize=12, color='black')
+
+            else:
+                # Remove any unused subplots
+                fig.delaxes(ax)
+
+        plt.suptitle("Pragmatics")
+        plt.tight_layout()
+        if viz_topname:
+            plt.savefig(save_path + "top_comm_"+viz_topname+"_"+sampled_id+"_pragmatics.jpg")
         else:
-            # Remove any unused subplots
-            fig.delaxes(ax)
+            plt.savefig(save_path + "top_comm_"+sampled_id+"_pragmatics.jpg")
 
-    plt.suptitle("Lexical-semantics")
-    plt.tight_layout()
-    if viz_topname:
-        plt.savefig(save_path + "top_comm_"+viz_topname+"_"+sampled_id+"_lexsem.jpg")
-    else:
-        plt.savefig(save_path + "top_comm_"+sampled_id+"_lexsem.jpg")
-
+    
 
 
 #### PLOT: histogram of topnames of closest images
-    top_columns_100 = list(row_values.nlargest(100).index)
-    closest_topnames = [img_infos[i][2] for i in top_columns_100]
-    topname_counts = {}
-    for name in closest_topnames:
-        topname_counts[name] = topname_counts.get(name, 0) + 1
+        top_columns_100 = list(row_values.nlargest(100).index)
+        closest_topnames = [img_infos[i][2] for i in top_columns_100]
+        topname_counts = {}
+        for name in closest_topnames:
+            topname_counts[name] = topname_counts.get(name, 0) + 1
 
-    sorted_topname_counts = sorted(topname_counts.items(), key=lambda x: x[1], reverse=True)
-    topname_labels, topname_frequencies = zip(*sorted_topname_counts)
-    topname_values = np.arange(len(topname_labels))
+        sorted_topname_counts = sorted(topname_counts.items(), key=lambda x: x[1], reverse=True)
+        topname_labels, topname_frequencies = zip(*sorted_topname_counts)
+        topname_values = np.arange(len(topname_labels))
 
-    plt.figure(figsize=(12, 6))  # Adjust the figure size as per your requirement
-    plt.bar(topname_values, topname_frequencies)
-    plt.xlabel('Names')
-    plt.ylabel('Frequency')
-    plt.title(str(img_infos[sampled_id][2]))
-    plt.xticks(topname_values, topname_labels, rotation=90)  # Rotate x-axis labels if necessary
-    plt.show()
-    plt.savefig(save_path + "topnames_closest_"+sampled_id+"_lexsem.jpg")
+        plt.figure(figsize=(12, 6))  # Adjust the figure size as per your requirement
+        plt.bar(topname_values, topname_frequencies)
+        plt.xlabel('Names')
+        plt.ylabel('Frequency')
+        plt.title(str(img_infos[sampled_id][2]))
+        plt.xticks(topname_values, topname_labels, rotation=90)  # Rotate x-axis labels if necessary
+        plt.show()
+        plt.savefig(save_path + "topnames_closest_"+sampled_id+"_lexsem.jpg")
+    
+    # if no 2 images found for the same word
+    else:
+        pass
+
 
 
 
@@ -230,7 +247,7 @@ def vis_sim_per_word(dataset, team, sampled_id):
                 ids_to_comms[vg_image_id] = np_comm[0]
         else : # there is no Glove embedding for that preset_targ_idx
             pass
-
+    
     arrays = np.array(list(ids_to_comms.values()))
     matrix = cosine_similarity(arrays)
     df_matrix = pd.DataFrame(matrix)
@@ -337,7 +354,7 @@ def run(plot_img_grids=True):
         # here we sample one seed and make plots for a few images (no average across seeds, nor across images)
 
         #sampled_images = random.sample(list(val_data['vg_image_id']), 5) 
-        sampled_images = random.sample(list(train_data['vg_image_id']), 1) 
+        sampled_images = random.sample(list(train_data['vg_image_id']), 100)
         sampled_seed = random.sample(settings.seeds, 1)
         
         for p_train in settings.p_notseedist:
@@ -367,6 +384,8 @@ def run(plot_img_grids=True):
 
         prag_tar_sim, prag_dist_sim, lex_tar_sim, lex_dist_sim = [], [], [], []
         sampled_images = random.sample(list(val_data['vg_image_id']), 100)
+        # we exclude these 4 because we don't have their topname embedding, so they are not in ids_to_comm
+        sampled_images = [i for i in sampled_images if i not in ["1034", "2413150", "1515", "1073"]]
         sampled_seed = random.sample(settings.seeds, 1)
 
         for p_train in settings.p_notseedist:
@@ -396,8 +415,13 @@ def run(plot_img_grids=True):
                 tmp_lex_tar_sim.append(viz[2])
                 #tmp_lex_dist_sim.append(viz[3])
 
+            tmp_prag_tar_sim = [i for i in tmp_prag_tar_sim if i != 1.0]
+            tmp_prag_dist_sim = [i for i in tmp_prag_dist_sim if i != 1.0]
+            tmp_lex_tar_sim = [i for i in tmp_lex_tar_sim if i != 1.0]
+            tmp_lex_dist_sim = [i for i in tmp_lex_dist_sim if i != 1.0]
+
             prag_tar_sim.append(sum(tmp_prag_tar_sim) / len(tmp_prag_tar_sim))
-            prag_dist_sim.append(sum(tmp_prag_dist_sim) / len(tmp_prag_dist_sim))
+            #prag_dist_sim.append(sum(tmp_prag_dist_sim) / len(tmp_prag_dist_sim))
             lex_tar_sim.append(sum(tmp_lex_tar_sim) / len(tmp_lex_tar_sim))
             #lex_dist_sim.append(sum(tmp_lex_dist_sim) / len(tmp_lex_dist_sim))
            
@@ -421,12 +445,12 @@ if __name__ == '__main__':
     settings.see_distractor = False
     settings.see_distractors_pragmatics = True
 
-    settings.with_ctx_representation = True
-    settings.dropout = True
-    settings.see_probabilities = False
+    settings.with_ctx_representation = False
+    settings.dropout = False
+    settings.see_probabilities = True
     
     settings.eval_someRE = False
-    settings.sim_threshold = 0.7
+    settings.sim_threshold = 0.99
 
     num_distractors = 1
     settings.num_distractors = num_distractors
@@ -440,7 +464,7 @@ if __name__ == '__main__':
     do_calc_complexity = True
     do_plot_comms = False
     settings.alpha = 1
-    settings.kl_weight = 0.1  # For cont
+    settings.kl_weight = 0.5  
     settings.kl_incr = 0.0
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -467,14 +491,15 @@ if __name__ == '__main__':
     settings.sample_first = True
     speaker_type = 'vq'  # Options are 'vq', 'cont', or 'onehot'
 
-    settings.seeds = [0, 1, 2]
+    #settings.seeds = [0, 1, 2]
+    settings.seeds = [0]
     my_seed = 0
     random.seed(my_seed)
     np.random.seed(my_seed)
     torch.manual_seed(my_seed)
     
     glove_data = get_glove_vectors(32)
-    settings.p_notseedist = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+    settings.p_notseedist = [0.5, 0.7, 0.9, 1.0] #[0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
     fieldname = "topname"
     viz_topname = None
 

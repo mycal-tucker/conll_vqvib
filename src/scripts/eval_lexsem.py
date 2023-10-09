@@ -447,7 +447,7 @@ if __name__ == '__main__':
     settings.see_distractor = False
     settings.see_distractors_pragmatics = True
 
-    settings.with_ctx_representation = True    
+    settings.with_ctx_representation = False    
     settings.prob_notseedist = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
     settings.dropout = False
     settings.see_probabilities = True
@@ -466,7 +466,7 @@ if __name__ == '__main__':
     do_calc_complexity = True
     do_plot_comms = False
     settings.alpha = 1
-    settings.kl_weight = 0.1
+    settings.kl_weight = 0.5
     settings.kl_incr = 0.0
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'

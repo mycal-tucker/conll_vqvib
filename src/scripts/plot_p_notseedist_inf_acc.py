@@ -149,6 +149,6 @@ if __name__ == '__main__':
 
     settings.eval_someRE = False
     settings.seeds = [0, 1, 2]
-    settings.kl_weight = 0.1
+    settings.kl_weight = 0.5
     run()
 
