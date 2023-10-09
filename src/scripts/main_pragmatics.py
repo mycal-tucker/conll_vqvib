@@ -358,7 +358,7 @@ def run():
     print("Len train set:",len(train_data), "Len val set:", len(val_data), "Len test set:", len(test_data))
     viz_data = train_data  # For debugging, it's faster to just reuse datasets
     
-    speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
+    speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=32, num_simultaneous_tokens=8, variational=variational, num_imgs=num_imgs)
         
     model = Team(speaker, listener, decoder)
     model.to(settings.device)
@@ -399,7 +399,6 @@ if __name__ == '__main__':
     b_size = 1024
     c_dim = 128
     variational = True
-    settings.num_protos = 442 # 442 is the number of topnames in MN 
     # Measuring complexity takes a lot of time. For debugging other features, set to false.
     do_calc_complexity = True
     do_plot_comms = False
