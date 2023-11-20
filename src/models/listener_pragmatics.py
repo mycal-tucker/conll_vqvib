@@ -26,3 +26,24 @@ class ListenerPragmatics(nn.Module):
         h2 = F.relu(self.fc2(h1))
         y = self.fc3(h2)
         return y
+
+
+
+class ListenerPragmaticsCosines(nn.Module):
+    def __init__(self, feature_dim):
+        super(ListenerPragmaticsCosines, self).__init__()
+        self.feature_embed_dim = 16
+        self.comm_embedder = nn.Linear(feature_dim, self.feature_embed_dim)
+        self.feature_embedder = nn.Linear(feature_dim, self.feature_embed_dim)
+        self.cos = nn.CosineSimilarity(dim=2, eps=1e-6)
+
+    def forward(self, reconstructions, features):
+        target_recons = reconstructions[:, 0:1, :]
+        embedded_comm = self.comm_embedder(target_recons)
+        num_imgs = features.shape[1]
+        embedded_comm = embedded_comm.repeat(1, num_imgs, 1)
+        embedded_features = self.feature_embedder(features)
+        # Get cosine similarities
+        cosines = self.cos(embedded_comm, embedded_features)
+        logits = cosines
+        return logits

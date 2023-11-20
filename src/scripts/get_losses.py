@@ -1,5 +1,4 @@
 import os
-import json
 
 import numpy as np
 import pandas as pd
@@ -16,11 +15,10 @@ from src.data_utils.helper_fns import gen_batch, get_glove_embedding, get_unique
 from src.data_utils.read_data import get_feature_data
 from src.data_utils.read_data import load_cleaned_results
 from src.models.decoder import Decoder
-from src.models.listener_pragmatics import ListenerPragmatics, ListenerPragmaticsCosines
+from src.models.listener_pragmatics import ListenerPragmatics
 from src.models.team import Team
 from src.models.vae import VAE
 from src.models.vq import VQ
-from src.models.vqvib2 import VQVIB2
 from src.models.mlp import MLP
 from src.models.proto import ProtoNetwork
 from src.utils.mine_pragmatics import get_cond_info
@@ -293,7 +291,6 @@ def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utili
     for set_distinct in [True]:
         for empty_list in num_cand_to_metrics.get(set_distinct).values():
             empty_list.extend([PerformanceMetrics(), PerformanceMetrics()])  # Train metrics, validation metrics
-    
     settings.epoch = 0
     for epoch in range(num_epochs):
         settings.epoch += 1
@@ -301,31 +298,31 @@ def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utili
             settings.kl_weight += settings.kl_incr
 
         speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, p_notseedist, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
+
         start_time = time.time()
         optimizer.zero_grad()
         outputs, speaker_loss, info, recons = model(speaker_obs, listener_obs)
 
         loss = utility * criterion(outputs, labels)
-        #print("utility loss:", criterion(outputs, labels))
-        #print("utility loss weighted:", loss)
-
+        print("utility loss:", criterion(outputs, labels))
+        print("utility loss weighted:", loss)
+  
         if len(speaker_obs.shape) == 2:
             speaker_obs = torch.unsqueeze(speaker_obs, 1)
         # we only care about target reconstruction
         recons_loss = torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2))
-        #print("inform loss:", recons_loss)
-        #print("inform loss weighted:", settings.alpha * recons_loss)
+        print("inform loss:", recons_loss)
+        print("inform loss weighted:", settings.alpha * recons_loss)
         loss += settings.alpha * recons_loss
         loss += speaker_loss
-        #print("complexity loss:", speaker_loss / settings.kl_weight)
-        #print("complexity loss weighted:", speaker_loss.item())
+        print("complexity loss:", speaker_loss / settings.kl_weight)
+        print("complexity loss weighted:", speaker_loss)
         #print("Speaker loss fraction:\t", speaker_loss.item() / loss.item())
         #print("Recons loss fraction:\t", settings.alpha * recons_loss.item() / loss.item())
-        
-        print("objective:", loss)
-
         loss.backward()
+
         optimizer.step()
+
 
         end_time = time.time()
         # print("Elapsed time", end_time - start_time)
@@ -336,7 +333,6 @@ def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utili
         num_total = pred_labels.size
         running_acc = running_acc * 0.95 + 0.05 * num_correct / num_total
         running_mse = running_mse * 0.95 + 0.05 * recons_loss.item()
-        
         if epoch % 100 == 0:
             print('epoch', epoch, 'of', num_epochs)
             # print("Overall loss", loss.item())
@@ -355,6 +351,8 @@ def run():
         num_imgs = 3 if settings.with_ctx_representation else 2
     else:
         num_imgs = 1 if not settings.see_distractor else (num_distractors + 1)
+    listener = ListenerPragmatics(feature_len + num_imgs * feature_len, num_distractors+1, num_imgs=num_imgs)
+    decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
 
     data = get_feature_data(t_features_filename, excluded_ids=excluded_ids)
     data = data.sample(frac=1, random_state=seed) # Shuffle the data.
@@ -369,19 +367,21 @@ def run():
     print("context:", settings.with_ctx_representation)
 
     for u in settings.utilities:
-        # for each utility weight we load a model
+        print("---------------------")
+        print("\n")
+        print("\n")
+        print("\n")
+        print("utility weight:", u)
+
         speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
-        #listener = ListenerPragmatics(feature_len + num_imgs * feature_len, num_distractors+1, num_imgs=num_imgs)
-        #speaker = VQVIB2(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, num_images=num_imgs)
-        listener = ListenerPragmaticsCosines(feature_len)
-        decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
+
         model = Team(speaker, listener, decoder)
         model.to(settings.device)
 
         folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-        folder_utility_type = "utility"+str(u)+"/"+ "alpha"+str(settings.alpha) + '/'
-        save_loc = 'src/saved_models/test/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' + folder_utility_type
-        train(model, train_data, val_data, viz_data, glove_data=glove_data, utility=u, p_notseedist=0, vae=vae_model, savepath=save_loc, comm_dim=c_dim, fieldname='topname', num_epochs=n_epochs, batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
+        #folder_training_type = "utility"+str(u)+"/" 
+        save_loc = 'src/saved_models/get_losses/' + str(settings.num_protos) + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' 
+        train(model, val_data, val_data, viz_data, glove_data=glove_data, utility=u, p_notseedist=0, vae=vae_model, savepath=save_loc, comm_dim=c_dim, fieldname='topname', num_epochs=n_epochs, batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
 
 
 if __name__ == '__main__':
@@ -399,7 +399,9 @@ if __name__ == '__main__':
     
     num_distractors = 1
     settings.num_distractors = num_distractors
-    v_period = 100  # How often to test on the validation set and calculate various info metrics.
+    n_epochs = 1
+
+    v_period = 200  # How often to test on the validation set and calculate various info metrics.
     num_burnin = 500
     b_size = 1024
     c_dim = 128
@@ -408,13 +410,11 @@ if __name__ == '__main__':
     # Measuring complexity takes a lot of time. For debugging other features, set to false.
     do_calc_complexity = True
     do_plot_comms = False
-
-    n_epochs = 201
-    settings.alpha = 8.5 # informativeness
-    settings.utilities =  [8] # utility
+    settings.alpha = 1.1 # informativeness
+    settings.utilities =  [0.0] # utility
     settings.kl_weight = 1.0 # complexity
-    settings.kl_incr = 0.0 # complexity increase
-    
+    settings.kl_incr = 0.0 # increase in complexity
+
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     settings.learned_marginal = False

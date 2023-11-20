@@ -1,5 +1,6 @@
 import ast
 import os
+import json
 import pandas as pd
 import pickle
 import random
@@ -20,7 +21,7 @@ from src.data_utils.helper_fns import gen_batch, get_glove_embedding, get_unique
 from src.data_utils.read_data import get_feature_data
 from src.data_utils.read_data import load_cleaned_results
 from src.models.decoder import Decoder
-from src.models.listener_pragmatics import ListenerPragmatics
+from src.models.listener_pragmatics import ListenerPragmaticsCosines
 from src.models.team import Team
 from src.models.vae import VAE
 from src.models.vq import VQ
@@ -340,8 +341,8 @@ def run(plot_img_grids=True):
     val_data = val_data.reset_index(drop=True)
     print("Len val set non swapped:", len(val_data))
 
-    speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=32, num_simultaneous_tokens=8, variational=variational, num_imgs=num_imgs)
-    listener = ListenerPragmatics(feature_len + num_imgs * feature_len, num_distractors+1, num_imgs=num_imgs)
+    speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
+    listener = ListenerPragmaticsCosines(feature_len)
     decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
     model = Team(speaker, listener, decoder)
 
@@ -353,28 +354,33 @@ def run(plot_img_grids=True):
         # IMAGE GRIDS and HISTOGRAMS
         # here we sample one seed and make plots for a few images (no average across seeds, nor across images)
 
-        #sampled_images = random.sample(list(val_data['vg_image_id']), 5) 
-        sampled_images = random.sample(list(train_data['vg_image_id']), 100)
+        sampled_images = random.sample(list(train_data['vg_image_id']), 10)
         sampled_seed = random.sample(settings.seeds, 1)
         
-        for p_train in settings.p_notseedist:
+        for u in settings.utilities:
 
             folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-            folder_training_type = "train_dropout/p_dropout"+str(p_train)+"/" if settings.dropout else "train_probab/notsee_prob"+str(p_train)+"/"
-            model_to_eval_path = 'src/saved_models/' + folder_training_type + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/1999'
+            folder_utility = "utility"+str(u)+"/"
+            folder_alpha = "alpha"+str(settings.alpha)+"/"
+
+            json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/'
+            json_file = json_file_path+"objective.json"
+            with open(json_file, 'r') as f:
+                existing_params = json.load(f)
+            convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(settings.alpha)]['convergence epoch']
+            # load model
+            model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
             model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
             model.to(settings.device)
-            
 
             if viz_topname != None:
-                new_path = "Plots/" + folder_training_type + folder_ctx + 'kl_weight' + str(settings.kl_weight) + "/" + viz_topname + "/"
+                new_path = "Plots/" + str(settings.num_protos) + '/' + folder_utility + folder_alpha + folder_ctx + 'kl_weight' + str(settings.kl_weight) + "/" + viz_topname + "/"
             else:
-                new_path = "Plots/" + folder_training_type + folder_ctx + 'kl_weight' + str(settings.kl_weight) + "/"
+                new_path = "Plots/" + str(settings.num_protos) + '/' + folder_utility + folder_alpha + folder_ctx + 'kl_weight' + str(settings.kl_weight) + "/"
             if not os.path.exists(new_path):
                 os.makedirs(new_path)
             
             for s in sampled_images:
-                #visualize_solution(val_data, model, num_examples=110, save_path=new_path, sampled_id=s)
                 visualize_solution(train_data, model, num_examples=110, save_path=new_path, sampled_id=s)
                  
     else:
@@ -383,25 +389,37 @@ def run(plot_img_grids=True):
         # sample N images, average across seeds and across images
 
         prag_tar_sim, prag_dist_sim, lex_tar_sim, lex_dist_sim = [], [], [], []
-        sampled_images = random.sample(list(val_data['vg_image_id']), 100)
+        sampled_images = random.sample(list(val_data['vg_image_id']), 1000)
         # we exclude these 4 because we don't have their topname embedding, so they are not in ids_to_comm
         sampled_images = [i for i in sampled_images if i not in ["1034", "2413150", "1515", "1073"]]
         sampled_seed = random.sample(settings.seeds, 1)
 
-        for p_train in settings.p_notseedist:
+        for u in settings.utilities:
+            
+            print("utility:", u)
 
             folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-            folder_training_type = "train_dropout/p_dropout"+str(p_train)+"/" if settings.dropout else "train_probab/notsee_prob"+str(p_train)+"/"
-            model_to_eval_path = 'src/saved_models/' + folder_training_type + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/1999'
+            folder_utility = "utility"+str(u)+"/"
+            folder_alpha = "alpha"+str(settings.alpha)+"/"
+            
+            print("alpha:", settings.alpha)
+            json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/'
+            json_file = json_file_path+"objective.json"
+            with open(json_file, 'r') as f:
+                existing_params = json.load(f)
+            convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(settings.alpha)]['convergence epoch']
+            # load model
+            model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
+            
             model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
             model.to(settings.device)
 
-            training_type_to_save = "train_dropout/" if settings.dropout else "train_probab/"
+            
             folder_ctx_to_save = "with_ctx_" if settings.with_ctx_representation else "without_ctx_"
-            if viz_topname != None:
-                new_path = "Plots/" + training_type_to_save + folder_ctx_to_save + 'kl_weight' + str(settings.kl_weight) + "_" + viz_topname + "/"
-            else:
-                new_path = "Plots/" + training_type_to_save + folder_ctx_to_save + 'kl_weight' + str(settings.kl_weight) + "_"
+            #if viz_topname != None:
+            #    new_path = "Plots/" + str(settings.num_protos) + '/' + folder_training_type + folder_ctx_to_save + 'kl_weight' + str(settings.kl_weight) + "_" + viz_topname + "/"
+            #else:
+            #    new_path = "Plots/" + str(settings.num_protos) + '/' + folder_training_type + folder_ctx_to_save + 'kl_weight' + str(settings.kl_weight) + "_"
 
             tmp_prag_tar_sim = []
             tmp_prag_dist_sim = []
@@ -421,22 +439,25 @@ def run(plot_img_grids=True):
             tmp_lex_dist_sim = [i for i in tmp_lex_dist_sim if i != 1.0]
 
             prag_tar_sim.append(sum(tmp_prag_tar_sim) / len(tmp_prag_tar_sim))
-            #prag_dist_sim.append(sum(tmp_prag_dist_sim) / len(tmp_prag_dist_sim))
+            prag_dist_sim.append(sum(tmp_prag_dist_sim) / len(tmp_prag_dist_sim))
             lex_tar_sim.append(sum(tmp_lex_tar_sim) / len(tmp_lex_tar_sim))
             #lex_dist_sim.append(sum(tmp_lex_dist_sim) / len(tmp_lex_dist_sim))
-           
-        fig1 = plt.figure()
-        plt.plot(settings.p_notseedist, lex_tar_sim, label="Same word as in lex - tar sim")
-        plt.plot(settings.p_notseedist, prag_tar_sim, label="Same word as in pragm - tar sim")
-        #plt.plot(settings.p_notseedist, prag_dist_sim, label="Same word as in pragm - dist sim")
-        #plt.plot(settings.p_notseedist, lex_dist_sim, label="Same word as in lex - dist sim")
-        x_label = "p dropout" if settings.dropout else "prob not see distractor"
-        plt.xlabel(x_label)
-        plt.ylabel("Object visual similarity")
-        plt.legend()
-        plt.ylim(0.70, 1)
+        
+        print("Lexsem, targets:", lex_tar_sim)
+        print("Pragm, targets:", prag_tar_sim)
+        print("Pragm, distractors:", prag_dist_sim)
+        #fig1 = plt.figure()
+        #plt.plot(settings.p_notseedist, lex_tar_sim, label="Same word as in lex - tar sim")
+        #plt.plot(settings.p_notseedist, prag_tar_sim, label="Same word as in pragm - tar sim")
+        ##plt.plot(settings.p_notseedist, prag_dist_sim, label="Same word as in pragm - dist sim")
+        ##plt.plot(settings.p_notseedist, lex_dist_sim, label="Same word as in lex - dist sim")
+        #x_label = "p dropout" if settings.dropout else "prob not see distractor"
+        #plt.xlabel(x_label)
+        #plt.ylabel("Object visual similarity")
+        #plt.legend()
+        #plt.ylim(0.70, 1)
         #plt.title()
-        fig1.savefig(new_path + "solution_viz_similarity"+ str(settings.sim_threshold) +".png")
+        #fig1.savefig(new_path + "solution_viz_similarity"+ str(settings.sim_threshold) +".png")
   
 
 
@@ -454,8 +475,8 @@ if __name__ == '__main__':
 
     num_distractors = 1
     settings.num_distractors = num_distractors
-    n_epochs = 2000
-    v_period = 200  # How often to test on the validation set and calculate various info metrics.
+    n_epochs = 3000
+    v_period = 100  # How often to test on the validation set and calculate various info metrics.
     num_burnin = 500
     b_size = 1024
     c_dim = 128
@@ -463,9 +484,13 @@ if __name__ == '__main__':
     # Measuring complexity takes a lot of time. For debugging other features, set to false.
     do_calc_complexity = True
     do_plot_comms = False
-    settings.alpha = 1
-    settings.kl_weight = 0.5  
+    
+    settings.num_protos = 442
+    settings.alpha = 233 # informativeness
+    settings.utilities = [233]
+    settings.kl_weight = 1.0 # complexity  
     settings.kl_incr = 0.0
+    
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     settings.learned_marginal = False
@@ -491,7 +516,6 @@ if __name__ == '__main__':
     settings.sample_first = True
     speaker_type = 'vq'  # Options are 'vq', 'cont', or 'onehot'
 
-    #settings.seeds = [0, 1, 2]
     settings.seeds = [0]
     my_seed = 0
     random.seed(my_seed)
@@ -499,9 +523,8 @@ if __name__ == '__main__':
     torch.manual_seed(my_seed)
     
     glove_data = get_glove_vectors(32)
-    settings.p_notseedist = [0.5, 0.7, 0.9, 1.0] #[0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
     fieldname = "topname"
     viz_topname = None
 
-    run(plot_img_grids=True)
+    run(plot_img_grids=False)
 

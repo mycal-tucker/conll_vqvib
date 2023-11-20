@@ -65,7 +65,7 @@ This architecture seems much more stable, faster to converge, etc., the marginal
 instead of our hacky approximation from the other method, and we don't need clustering/embedding losses either.
 """
 class VQVIB2(nn.Module):
-    def __init__(self, input_dim, output_dim,  num_layers, num_protos, num_simultaneous_tokens=1):
+    def __init__(self, input_dim, output_dim,  num_layers, num_protos, num_simultaneous_tokens=1, num_images=1):
         super(VQVIB2, self).__init__()
         self.output_dim = output_dim
         self.comm_dim = output_dim
@@ -73,8 +73,10 @@ class VQVIB2(nn.Module):
         self.hidden_dim = 64
         self.num_tokens = num_protos  # Need this general variable for num tokens
         self.num_simultaneous_tokens = num_simultaneous_tokens
+        self.num_images = num_images
+        
+        input_dim = input_dim * self.num_images 
         self.feature_embedder = nn.Linear(input_dim, self.hidden_dim)
-
         self.fc1 = nn.Linear(input_dim, 64)
         self.fc2 = nn.Linear(64, 64)
         self.fc3 = nn.Linear(64, output_dim)
@@ -82,10 +84,14 @@ class VQVIB2(nn.Module):
         self.vq_layer = VQLayer(num_protos, self.proto_latent_dim)
 
     def forward(self, x):
-        bs = x.shape[0]
+
+        if self.num_images > 1:
+            x = torch.cat([x[:, i, :] for i in range(self.num_images)], dim=1)
+    
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
+
         reshaped = torch.reshape(x, (-1, self.proto_latent_dim))
         output, total_loss, capacity = self.vq_layer(reshaped)
 

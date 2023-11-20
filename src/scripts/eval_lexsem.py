@@ -1,4 +1,5 @@
 import os
+import json
 
 import numpy as np
 import pandas as pd
@@ -15,9 +16,10 @@ from src.data_utils.helper_fns import gen_batch, get_glove_embedding, get_unique
 from src.data_utils.read_data import get_feature_data
 from src.data_utils.read_data import load_cleaned_results
 from src.models.decoder import Decoder
-from src.models.listener_pragmatics import ListenerPragmatics
+from src.models.listener_pragmatics import ListenerPragmaticsCosines
 from src.models.team import Team
 from src.models.vae import VAE
+from src.models.vqvib2 import VQVIB2
 from src.models.vq import VQ
 from src.models.mlp import MLP
 from src.models.proto import ProtoNetwork
@@ -100,28 +102,44 @@ def evaluate_lexsem(model, dataset, batch_size, vae, glove_data, fieldname, num_
 
 
 
-def plot_comms(model, dataset, basepath):
-    num_tests = 1000  # Generate lots of samples for the same input because it's not deterministic.
+def plot_comms(model, vae, dataset, basepath):
+    num_tests = 100  # Generate lots of samples for the same input because it's not deterministic.
     labels = []
-    if settings.with_ctx_representation:
-        for f, f_d, f_ctx in zip(dataset['t_features'], dataset['d_features'], dataset['ctx_features']):
-            speaker_obs = np.expand_dims(np.vstack([f] + [f_d] + [f_ctx]), axis=0)
-            speaker_obs = torch.Tensor(np.vstack(speaker_obs).astype(np.float)).to(settings.device)   
-            speaker_obs = speaker_obs.unsqueeze(0)
-            speaker_obs = speaker_obs.repeat(num_tests, 1, 1)
-            speaker_obs = speaker_obs.view(3000, -1)
-
-            likelihoods = model.speaker.get_token_dist(speaker_obs)
-            top_comm_idx = np.argmax(likelihoods)
-            top_likelihood = likelihoods[top_comm_idx]
-            label = top_comm_idx if top_likelihood > 0.4 else -1
-            labels.append(label)
-    features = np.vstack(dataset)
+    
+    for targ_features, distractor_features, ctx_features in zip(dataset['t_features'], dataset['d_features'], dataset['ctx_features']):
+        if settings.with_ctx_representation:
+            s_obs = np.expand_dims(np.vstack([targ_features] + [distractor_features] + [ctx_features]), axis=0)
+        else:
+            s_obs = np.expand_dims(np.vstack([targ_features] + [distractor_features]), axis=0)
+        speaker_tensor = torch.Tensor(np.vstack(s_obs).astype(np.float)).to(settings.device)
+        if vae is not None:
+            with torch.no_grad():
+                speaker_tensor, _ = vae(speaker_tensor)
+        speaker_tensor = speaker_tensor.unsqueeze(0)
+        
+        # Add mask over distractor
+        mask = torch.ones_like(speaker_tensor, dtype=bool)
+        num_tensors = speaker_tensor.shape[0]
+        indices = np.random.choice(num_tensors, int(num_tensors * 1), replace=False)
+        mask[indices, 1, :] = False
+        speaker_obs = torch.where(mask, speaker_tensor, torch.tensor(0.0, device=settings.device))
+        
+        speaker_obs = speaker_obs.repeat(num_tests, 1, 1)
+        likelihoods = model.speaker.get_token_dist(speaker_obs)
+        top_comm_idx = np.argmax(likelihoods)
+        top_likelihood = likelihoods[top_comm_idx]
+        label = top_comm_idx if top_likelihood > 0.4 else -1
+        labels.append(label)
+    
+    features = np.vstack(dataset['t_features'])
+    topnames = list(dataset['topname'])
     label_np = np.reshape(np.array(labels), (-1, 1))
     all_np = np.hstack([label_np, features])
+    all_np = np.array(all_np, dtype=float) # convert to float
+   
     regrouped_data = []
     plot_labels = []
-    plot_mean = False
+    plot_mean = True
     for c in np.unique(labels):
         ix = np.where(all_np[:, 0] == c)
         matching_features = np.vstack(all_np[ix, 1:])
@@ -129,120 +147,9 @@ def plot_comms(model, dataset, basepath):
         plot_features = averaged if plot_mean else matching_features
         regrouped_data.append(plot_features)
         plot_labels.append(c)
-    plot_naming(regrouped_data, viz_method='mds', labels=plot_labels, savepath=basepath + 'training_mds')
-    plot_naming(regrouped_data, viz_method='tsne', labels=plot_labels, savepath=basepath + 'training_tsne')
-
-
-def eval_model_training(model, vae, comm_dim, p_train, data, viz_data, glove_data, num_cand_to_metrics, save_eval_path,
-               fieldname, calculate_complexity=False, plot_comms_flag=False, alignment_dataset=None, save_model=True):
-    # Create a directory to save information, models, etc.
-
-    if not os.path.exists(save_eval_path + 'training/'):
-        os.makedirs(save_eval_path + 'training/')
-    if calculate_complexity:
-        test_complexity = get_cond_info(model, data, targ_dim=comm_dim, p_notseedist=p_train, glove_data=glove_data, num_epochs=200)
-        print("Test complexity", test_complexity)
-    else:
-        test_complexity = None
-        val_complexity = None
-
-    eval_batch_size = 256
-    complexities = [test_complexity]
-    for set_distinction in [True]:
-        for feature_idx, data in enumerate([data]):
-            for num_candidates in num_cand_to_metrics.get(set_distinction).keys():
-                settings.distinct_words = set_distinction
-                acc, recons = evaluate_training(model, data, p_train, eval_batch_size, vae, glove_data, fieldname=fieldname, num_dist=num_candidates - 1)
-            relevant_metrics = num_cand_to_metrics.get(set_distinction).get(num_candidates)[feature_idx]
-            relevant_metrics.add_data("eval_epoch", complexities[feature_idx], -1 * recons, acc, settings.kl_weight)
-    # Plot some of the metrics for online visualization
-    comm_accs = []
-    regressions = []
-    labels = []
-    epoch_idxs = None
-    plot_metric_data = num_cand_to_metrics.get(True)
-    for feature_idx, label in enumerate(['test']):
-        for num_candidates in sorted(plot_metric_data.keys()):
-            comm_accs.append(plot_metric_data.get(num_candidates)[feature_idx].comm_accs)
-#           regressions.append(plot_metric_data.get(num_candidates)[feature_idx].embed_r2)
-            labels.append(" ".join([label, str(num_candidates), "utility"]))
-            if epoch_idxs is None:
-                epoch_idxs = plot_metric_data.get(num_candidates)[feature_idx].epoch_idxs
-    plot_metrics(comm_accs, labels, epoch_idxs, save_eval_path + 'training/')
-#    plot_metrics(regressions, ['r2 score'], epoch_idxs, save_eval_path + 'regression_')
-
-    # Visualize some of the communication
-    try:
-        if plot_comms_flag:
-            plot_comms(model, viz_data['features'], basepath)
-    except AssertionError:
-        print("Can't plot comms for whatever reason (e.g., continuous communication makes categorizing hard)")
-    # Save the model and metrics to files.
-    for feature_idx, label in enumerate(['test']):
-        for set_distinction in num_cand_to_metrics.keys():
-            for num_candidates in sorted(num_cand_to_metrics.get(set_distinction).keys()):
-                metric = num_cand_to_metrics.get(set_distinction).get(num_candidates)[feature_idx]
-                metric.to_file(save_eval_path + 'training/' + "_".join([label, str(set_distinction), str(num_candidates), "metrics"]))
-    if not save_model:
-        return
-    torch.save(model.state_dict(), save_eval_path + 'training/model.pt')
-
-
-
-def eval_model_pragmatics(model, vae, comm_dim, data, viz_data, glove_data, num_cand_to_metrics, save_eval_path,
-               fieldname, calculate_complexity=False, plot_comms_flag=False, alignment_dataset=None, save_model=True):
-    # Create a directory to save information, models, etc.
     
-    if not os.path.exists(save_eval_path + 'pragmatics/'):
-        os.makedirs(save_eval_path + 'pragmatics/')
-    if calculate_complexity:
-        test_complexity = get_cond_info(model, data, targ_dim=comm_dim, p_notseedist=0, glove_data=glove_data, num_epochs=200)
-        print("Test complexity", test_complexity)
-    else:
-        test_complexity = None
-        val_complexity = None
-    
-    eval_batch_size = 256
-    complexities = [test_complexity]
-    for set_distinction in [True]:
-        for feature_idx, data in enumerate([data]):
-            for num_candidates in num_cand_to_metrics.get(set_distinction).keys():
-                settings.distinct_words = set_distinction
-                acc, recons = evaluate_pragmatics(model, data, eval_batch_size, vae, glove_data, fieldname=fieldname, num_dist=num_candidates - 1)
-            relevant_metrics = num_cand_to_metrics.get(set_distinction).get(num_candidates)[feature_idx]
-            relevant_metrics.add_data("eval_epoch", complexities[feature_idx], -1 * recons, acc, settings.kl_weight)
-
-    # Plot some of the metrics for online visualization
-    comm_accs = []
-    regressions = []
-    labels = []
-    epoch_idxs = None
-    plot_metric_data = num_cand_to_metrics.get(True)
-    for feature_idx, label in enumerate(['test']):
-        for num_candidates in sorted(plot_metric_data.keys()):
-            comm_accs.append(plot_metric_data.get(num_candidates)[feature_idx].comm_accs)
-#           regressions.append(plot_metric_data.get(num_candidates)[feature_idx].embed_r2)
-            labels.append(" ".join([label, str(num_candidates), "utility"]))
-            if epoch_idxs is None:
-                epoch_idxs = plot_metric_data.get(num_candidates)[feature_idx].epoch_idxs
-    plot_metrics(comm_accs, labels, epoch_idxs, save_eval_path + 'pragmatics/')
-#    plot_metrics(regressions, ['r2 score'], epoch_idxs, save_eval_path + 'regression_')
-
-    # Visualize some of the communication
-    try:
-        if plot_comms_flag:
-            plot_comms(model, viz_data['features'], basepath)
-    except AssertionError:
-        print("Can't plot comms for whatever reason (e.g., continuous communication makes categorizing hard)")
-    # Save the model and metrics to files.
-    for feature_idx, label in enumerate(['test']):
-        for set_distinction in num_cand_to_metrics.keys():
-            for num_candidates in sorted(num_cand_to_metrics.get(set_distinction).keys()):
-                metric = num_cand_to_metrics.get(set_distinction).get(num_candidates)[feature_idx]
-                metric.to_file(save_eval_path + 'pragmatics/' + "_".join([label, str(set_distinction), str(num_candidates), "metrics"]))
-    if not save_model:
-        return
-    torch.save(model.state_dict(), save_eval_path + 'pragmatics/model.pt')
+    plot_naming(regrouped_data, topnames, viz_method='mds', labels=plot_labels, savepath=basepath + 'lexsem_mds')
+    plot_naming(regrouped_data, topnames, viz_method='tsne', labels=plot_labels, savepath=basepath + 'lexsem_tsne')
 
 
 
@@ -268,7 +175,7 @@ def eval_model_lexsem(model, vae, comm_dim, data, viz_data, glove_data, num_cand
 #            if english_fieldname == 'responses':
 #                use_top = False
 #                dummy_eng = 'topname'
-#            consistency_score = get_relative_embedding(model, align_data, glove_data, test_data, fieldname='responses')
+#            consistency_score = get_relative_embedding_LEXSEM(model, align_data, glove_data, test_data, fieldname='responses')
 #            consistencies.append(consistency_score)
 
 #    num_runs = len(alignment_datasets)
@@ -304,7 +211,7 @@ def eval_model_lexsem(model, vae, comm_dim, data, viz_data, glove_data, num_cand
     # Visualize some of the communication
     try:
         if plot_comms_flag:
-            plot_comms(model, viz_data['features'], basepath)
+            plot_comms(model, vae_model, viz_data, save_eval_path)
     except AssertionError:
         print("Can't plot comms for whatever reason (e.g., continuous communication makes categorizing hard)")
     # Save the model and metrics to files.
@@ -320,19 +227,40 @@ def eval_model_lexsem(model, vae, comm_dim, data, viz_data, glove_data, num_cand
 
 
 # Given a model and a set of anchors, compute the relative encoding position of lots of communication vectors?
-def get_relative_embedding(model, anchor_dataset, glove_data, rel_abs_data, fieldname):
-    # First, compute the anchors
+def get_relative_embedding_LEXSEM(model, vae, anchor_dataset, glove_data, rel_abs_data, fieldname):
+    # First, compute the anchorsi
     num_anchors = 100
     count = 0
     model_anchors = []
     glove_anchors = []
     itr_count = -1
-    for f, word in zip(anchor_dataset['t_features'], anchor_dataset[fieldname]):
+    for targ_features, distractor_features, ctx_features, word in zip(anchor_dataset['t_features'], anchor_dataset['d_features'], anchor_dataset['ctx_features'], anchor_dataset[fieldname]):
         itr_count += 1
-        speaker_obs = torch.Tensor(np.array(f)).to(settings.device)
-        speaker_obs = torch.unsqueeze(speaker_obs, 0)
+        if settings.with_ctx_representation:
+            s_obs = np.expand_dims(np.vstack([targ_features] + [distractor_features] + [ctx_features]), axis=0)
+        else:
+            s_obs = np.expand_dims(np.vstack([targ_features] + [distractor_features]), axis=0)
+        
+        speaker_tensor = torch.Tensor(np.vstack(s_obs).astype(np.float)).to(settings.device)
+        if vae is not None:
+            with torch.no_grad():
+                speaker_tensor, _ = vae(speaker_tensor)
+        speaker_tensor = speaker_tensor.unsqueeze(0)
+        # Add mask over distractor
+        # Create a mask of the same shape as the tensor
+        mask = torch.ones_like(speaker_tensor, dtype=bool)
+        # Generate indices to apply the mask
+        num_tensors = speaker_tensor.shape[0]
+        indices = np.random.choice(num_tensors, int(num_tensors * 1), replace=False)
+        # Apply the mask to the selected indices
+        mask[indices, 1, :] = False
+        # Apply the mask to the tensor
+        speaker_obs = torch.where(mask, speaker_tensor, torch.tensor(0.0, device=settings.device))
+        
+        #speaker_obs = torch.Tensor(np.array(f)).to(settings.device)
+        #speaker_obs = torch.unsqueeze(speaker_obs, 0)
         with torch.no_grad():
-            speaker_obs = speaker_obs.repeat(1, 1)
+            #speaker_obs = speaker_obs.repeat(1, 1)
             comm, _, _ = model.speaker(speaker_obs)
         try:
             if fieldname == 'responses':
@@ -416,31 +344,50 @@ def run():
         print("Len test set:", len(test_data))
         print("Len val set:", len(val_data))
   
-        viz_data = train_data  # For debugging, it's faster to just reuse datasets
-   
-#    alignment_datasets = [get_rand_entries(test_data, num_examples) for _ in range(num_rand_trials)]
-#    print(alignment_datasets[0])
+        viz_data = val_data  
 
-        speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=32, num_simultaneous_tokens=8, variational=variational, num_imgs=num_imgs)
-        listener = ListenerPragmatics(feature_len + num_imgs * feature_len, num_distractors+1, num_imgs=num_imgs)
+        speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
+        #speaker = VQVIB2(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_images=num_imgs)
+        listener = ListenerPragmaticsCosines(feature_len)
         decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
         model = Team(speaker, listener, decoder)
 
-        for p_train in settings.prob_notseedist:
-            print(p_train)
-            folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-            folder_training_type = "train_dropout/p_dropout"+str(p_train)+"/" if settings.dropout else "train_probab/notsee_prob"+str(p_train)+"/"
-            model_to_eval_path = 'src/saved_models/' + folder_training_type + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/1999'
-            save_eval_path = model_to_eval_path + '/evaluation/'
-            model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
-            model.to(settings.device)
-           
-            print("Lexical semantics task") 
-            num_cand_to_metrics = {True: {2: []}}
-            for empty_list in num_cand_to_metrics.get(True).values():
-                empty_list.extend([PerformanceMetrics()])
-            eval_model_lexsem(model, vae_model, c_dim, val_data, viz_data, glove_data, num_cand_to_metrics, save_eval_path, fieldname='topname', calculate_complexity=do_calc_complexity, plot_comms_flag=do_plot_comms)
-   
+        for u in settings.utilities:
+            print(u)
+            for a in settings.alphas:
+                print(a)
+                
+                folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
+                folder_utility = "utility"+str(u)+"/"
+                folder_alpha = "alpha"+str(a)+"/"
+
+                # get convergence epoch for that model
+                json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/'
+                json_file = json_file_path+"objective_merged.json"
+                with open(json_file, 'r') as f:
+                    existing_params = json.load(f)
+                convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(a)]['convergence epoch']
+                # load model
+                model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
+                save_eval_path = model_to_eval_path + '/evaluation/'
+                model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
+                model.to(settings.device)
+
+                print("Lexical semantics task") 
+                num_cand_to_metrics = {True: {2: []}}
+                for empty_list in num_cand_to_metrics.get(True).values():
+                    empty_list.extend([PerformanceMetrics()])
+                eval_model_lexsem(model, vae_model, c_dim, val_data, viz_data, glove_data, num_cand_to_metrics, save_eval_path, fieldname='topname', calculate_complexity=do_calc_complexity, plot_comms_flag=do_plot_comms)
+                #alignment_datasets = [get_rand_entries(val_data, num_examples) for _ in range(num_rand_trial)]
+                #consistency_scores = []
+                #for j, align_data in enumerate(alignment_datasets):
+                #    consistency_score = get_relative_embedding_LEXSEM(model, vae_model, align_data, glove_data, val_data, fieldname='responses')     
+                #    consistency_scores.append(consistency_score)
+                #print(consistency_scores)
+                #print("average:", sum(consistency_scores) / len(consistency_scores))
+
+
+
 
 if __name__ == '__main__':
     feature_len = 512
@@ -448,7 +395,6 @@ if __name__ == '__main__':
     settings.see_distractors_pragmatics = True
 
     settings.with_ctx_representation = False    
-    settings.prob_notseedist = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
     settings.dropout = False
     settings.see_probabilities = True
 
@@ -456,17 +402,27 @@ if __name__ == '__main__':
     
     num_distractors = 1
     settings.num_distractors = num_distractors
-    n_epochs = 2000
+    n_epochs = 3000
     v_period = 200  # How often to test on the validation set and calculate various info metrics.
     num_burnin = 500
     b_size = 1024
     c_dim = 128
     variational = True
     # Measuring complexity takes a lot of time. For debugging other features, set to false.
-    do_calc_complexity = True
+    do_calc_complexity = False
     do_plot_comms = False
-    settings.alpha = 1
-    settings.kl_weight = 0.5
+
+    settings.num_protos = 3000 # 442 is the number of topnames in MN
+    settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12.8, 21, 33, 88, 140, 233]
+    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12.8, 21, 33, 88, 140, 233]
+    #settings.alphas =  [8.5, 9, 9.5, 10, 11, 12.8, 15, 21, 33, 55, 88, 140, 233]
+    #settings.utilities =   [8, 8.5, 9, 9.5, 10, 11, 12.8, 15, 21, 33, 55, 88, 140, 233]
+    settings.kl_weight = 1.0 # complexity
+    
+    # to get alignment
+    num_rand_trial = 5 #5
+    num_examples = 100 #500
+
     settings.kl_incr = 0.0
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -479,9 +435,6 @@ if __name__ == '__main__':
     viz_names = ['airplane', 'plane',
                  'animal', 'cow', 'dog', 'cat']
     
-    num_rand_trials = 5 # to regulate get_relative_embeddings
-    num_examples = 100
-
     t_features_filename = 'src/data/t_features.csv'
     settings.d_features_filename = 'src/data/d_features.csv'
     settings.d_bboxes_filename = 'src/data/d_xyxy.tsv'
@@ -496,7 +449,7 @@ if __name__ == '__main__':
     settings.embedding_cache = {}
     settings.sample_first = True
     speaker_type = 'vq'  # Options are 'vq', 'cont', or 'onehot'
-    settings.seeds = [0, 1, 2] 
+    settings.seeds = [0] #0,1,2 
     
     glove_data = get_glove_vectors(32)
     run()

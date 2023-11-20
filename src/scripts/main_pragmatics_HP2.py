@@ -19,8 +19,8 @@ from src.models.decoder import Decoder
 from src.models.listener_pragmatics import ListenerPragmatics, ListenerPragmaticsCosines
 from src.models.team import Team
 from src.models.vae import VAE
-from src.models.vq import VQ
 from src.models.vqvib2 import VQVIB2
+from src.models.vq import VQ
 from src.models.mlp import MLP
 from src.models.proto import ProtoNetwork
 from src.utils.mine_pragmatics import get_cond_info
@@ -30,6 +30,12 @@ from src.utils.performance_metrics import PerformanceMetrics
 import time
 
 from src.data_utils.read_data import get_glove_vectors
+
+
+def normalize(values):
+    total = sum(values)
+    return tuple(round(value / total, 2) for value in values)
+
 
 def evaluate(model, dataset, batch_size, p_notseedist, vae, glove_data, fieldname, num_dist=None):
     model.eval()
@@ -279,75 +285,180 @@ def eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data,
 
 
 
-def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utility, vae, savepath, comm_dim, fieldname, num_epochs=3000, batch_size=1024, burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
+def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utility, vae, savepath, objective_json, comm_dim, fieldname, batch_size=1024, burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
     unique_topnames, _ = get_unique_labels(train_data)
 
     criterion = nn.CrossEntropyLoss()
     #optimizer = optim.Adam(model.parameters(), lr=0.0001)  
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    
-    running_acc = 0
-    running_mse = 0
-    
-    num_cand_to_metrics = {True: {2: []}}  
-    for set_distinct in [True]:
-        for empty_list in num_cand_to_metrics.get(set_distinct).values():
-            empty_list.extend([PerformanceMetrics(), PerformanceMetrics()])  # Train metrics, validation metrics
-    
-    settings.epoch = 0
-    for epoch in range(num_epochs):
-        settings.epoch += 1
-        if epoch > burnin_epochs:
-            settings.kl_weight += settings.kl_incr
+       
+    idx = 1 # index of starting utility
+    while idx != len(settings.utilities):
+        converged = False
+        alpha = settings.alphas[settings.starting_alpha_idx]
+        utility = settings.utilities[idx] # we take the new utility 
+        folder_utility_type = "utility"+str(utility)+"/"
+        savepath_new = savepath + folder_utility_type + "alpha"+str(alpha) + '/'
+        print("training with utility:", utility)
+        print("training with alpha:", alpha)
+        epoch = 0
+        running_acc = 0
+        running_mse = 0
+        num_cand_to_metrics = {True: {2: []}}
+        for set_distinct in [True]:
+            for empty_list in num_cand_to_metrics.get(set_distinct).values():
+                empty_list.extend([PerformanceMetrics(), PerformanceMetrics()])  # Train metrics, validation metrics
 
-        speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, p_notseedist, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
-        start_time = time.time()
-        optimizer.zero_grad()
-        outputs, speaker_loss, info, recons = model(speaker_obs, listener_obs)
+        # normalize loss weights
+        complexity_weight = settings.kl_weight_unnorm
+        print("unnorm complexity:", complexity_weight)
+        informativeness_weight = alpha
+        print("unnorm informativeness:", informativeness_weight)
+        utility_weight = utility # we vary this iteratving over indices of settings.utilities
+        print("unnorm utility:", utility_weight)
+        norm_weights = normalize([complexity_weight, informativeness_weight, utility_weight])
+        settings.kl_weight = norm_weights[0]
+        print("norm complexity:", settings.kl_weight) # complexity weight (normalized)
+        informativeness_weight = norm_weights[1]
+        print("norm informativeness:", informativeness_weight)
+        utility_weight = norm_weights[2]
+        print("norm utility:", utility_weight)
 
-        loss = utility * criterion(outputs, labels)
-        #print("utility loss:", criterion(outputs, labels))
-        #print("utility loss weighted:", loss)
-
-        if len(speaker_obs.shape) == 2:
-            speaker_obs = torch.unsqueeze(speaker_obs, 1)
-        # we only care about target reconstruction
-        recons_loss = torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2))
-        #print("inform loss:", recons_loss)
-        #print("inform loss weighted:", settings.alpha * recons_loss)
-        loss += settings.alpha * recons_loss
-        loss += speaker_loss
-        #print("complexity loss:", speaker_loss / settings.kl_weight)
-        #print("complexity loss weighted:", speaker_loss.item())
-        #print("Speaker loss fraction:\t", speaker_loss.item() / loss.item())
-        #print("Recons loss fraction:\t", settings.alpha * recons_loss.item() / loss.item())
+        while converged == False:
         
-        print("objective:", loss)
+            epoch += 1
+            speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, p_notseedist, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
+            start_time = time.time()
+            optimizer.zero_grad()
+            outputs, speaker_loss, info, recons = model(speaker_obs, listener_obs)
+            
+            error = criterion(outputs, labels)
+            utility_loss = utility_weight * error # to store later untouched
+            loss = utility_weight * error
 
-        loss.backward()
-        optimizer.step()
+            if len(speaker_obs.shape) == 2:
+                speaker_obs = torch.unsqueeze(speaker_obs, 1)
 
-        end_time = time.time()
-        # print("Elapsed time", end_time - start_time)
-
-        # Metrics
-        pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
-        num_correct = np.sum(pred_labels == labels.cpu().numpy())
-        num_total = pred_labels.size
-        running_acc = running_acc * 0.95 + 0.05 * num_correct / num_total
-        running_mse = running_mse * 0.95 + 0.05 * recons_loss.item()
+            # we only care about target reconstruction
+            recons_loss = torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2))
+            loss += informativeness_weight * recons_loss
+            loss += speaker_loss
+            unweighted_loss = speaker_loss + recons_loss + error # the speaker part is actually weighted
         
-        if epoch % 100 == 0:
-            print('epoch', epoch, 'of', num_epochs)
-            # print("Overall loss", loss.item())
-            # print("Kl weight", settings.kl_weight)
-            print("Running acc", running_acc)
-            print("Running mse", running_mse)
-            # print("Supervised loss", supervised_loss)
-
-        if epoch % val_period == val_period - 1:
-            eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics, savepath, epoch, fieldname, p_notseedist, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
+            #print("Speaker loss fraction:\t", speaker_loss.item() / loss.item())
+            #print("Recons loss fraction:\t", settings.alpha * recons_loss.item() / loss.item())
         
+            loss.backward()
+            optimizer.step()
+
+            end_time = time.time()
+            # print("Elapsed time", end_time - start_time)
+
+            # Metrics
+            pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
+            num_correct = np.sum(pred_labels == labels.cpu().numpy())
+            num_total = pred_labels.size
+            running_acc = running_acc * 0.95 + 0.05 * num_correct / num_total
+            running_mse = running_mse * 0.95 + 0.05 * recons_loss.item()
+
+            if epoch % 100 == 0:
+                print('epoch', epoch)
+                # print("Overall loss", loss.item())
+                # print("Kl weight", settings.kl_weight)
+                print("Running acc", running_acc)
+                print("Running mse", running_mse)
+                # print("Supervised loss", supervised_loss)
+
+            stored_objectives = []
+            if epoch % val_period == val_period - 1:
+                stored_objectives.append(loss.item())
+                eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics, savepath_new, epoch, fieldname, p_notseedist, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
+            
+            if epoch != 4999:
+
+                # check convergence
+                metrics_path = savepath_new + str(epoch) + '/val_True_2_metrics'
+                if os.path.exists(metrics_path):
+                    acc_history = PerformanceMetrics.from_file(metrics_path).comm_accs
+                    recent_acc = acc_history[-look_back:]
+                    rec_history = PerformanceMetrics.from_file(metrics_path).recons
+                    recent_rec = rec_history[-look_back:]
+                    recent_objectives = stored_objectives[-look_back:]
+
+                    if len(recent_acc) == look_back and np.var(recent_acc) < epsilon_convergence and np.var(recent_rec) < epsilon_convergence and np.var(recent_objectives) < epsilon_convergence:
+                        converged = True
+                        print("CONVERGED!!!")
+                    
+                        # save model info
+                        json_file = objective_json + "objective" + str(settings.starting_alpha_idx) + ".json"            
+                        if os.path.exists(json_file):
+                            with open(json_file, 'r') as f:
+                                existing_params = json.load(f)
+                        else:
+                            existing_params = {}
+            
+                        dic = {}
+                        dic["inf_weight"+str(alpha)] = {"objective": loss.item(),
+                                                #"unw objective": unweighted_loss.item(),
+                                                "speaker loss": speaker_loss.item(), # weighted already
+                                                "recons loss": informativeness_weight * recons_loss.item(),
+                                                "unw recons loss": recons_loss.item(),
+                                                "utility loss": utility_loss.item(), # weighted already
+                                                "unw utility loss": error.item(),
+                                                "convergence epoch": epoch} 
+
+                        if "utility"+str(utility) in existing_params.keys():
+                            existing_params["utility"+str(utility)].update(dic)
+                        else:
+                            existing_params["utility"+str(utility)] = dic
+
+                        with open(json_file, 'w') as f:
+                            json.dump(existing_params, f, indent=4)
+                    
+                        # go to following model
+                        idx += 1 # new utility
+                        break
+
+                    else: # not converged
+                        continue
+            
+            elif epoch == 4999:
+                converged = True
+                print("EPOCH 4999!!!")
+
+                # save model info
+                json_file = objective_json + "objective" + str(settings.starting_alpha_idx) + ".json"
+                if os.path.exists(json_file):
+                    with open(json_file, 'r') as f:
+                        existing_params = json.load(f)
+                else:
+                    existing_params = {}
+
+                dic = {}
+                dic["inf_weight"+str(alpha)] = {"objective": loss.item(),
+                                                #"unw objective": unweighted_loss.item(),
+                                                "speaker loss": speaker_loss.item(), # weighted already
+                                                "recons loss": informativeness_weight * recons_loss.item(),
+                                                "unw recons loss": recons_loss.item(),
+                                                "utility loss": utility_loss.item(), # weighted already
+                                                "unw utility loss": error.item(),
+                                                "convergence epoch": epoch}
+                
+                if "utility"+str(utility) in existing_params.keys():
+                    existing_params["utility"+str(utility)].update(dic)
+                else:
+                    existing_params["utility"+str(utility)] = dic
+
+                with open(json_file, 'w') as f:
+                    json.dump(existing_params, f, indent=4)
+
+                # go to following model
+                idx += 1 # new utility
+                break
+            
+            else: # just another epoch
+                continue
+
 
 
 def run():
@@ -355,7 +466,7 @@ def run():
         num_imgs = 3 if settings.with_ctx_representation else 2
     else:
         num_imgs = 1 if not settings.see_distractor else (num_distractors + 1)
-
+    
     data = get_feature_data(t_features_filename, excluded_ids=excluded_ids)
     data = data.sample(frac=1, random_state=seed) # Shuffle the data.
     train_data, test_data, val_data = np.split(data.sample(frac=1, random_state=seed), 
@@ -368,20 +479,36 @@ def run():
     #print("dropout:", settings.dropout)
     print("context:", settings.with_ctx_representation)
 
-    for u in settings.utilities:
-        # for each utility weight we load a model
-        speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
-        #listener = ListenerPragmatics(feature_len + num_imgs * feature_len, num_distractors+1, num_imgs=num_imgs)
-        #speaker = VQVIB2(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, num_images=num_imgs)
-        listener = ListenerPragmaticsCosines(feature_len)
-        decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
-        model = Team(speaker, listener, decoder)
-        model.to(settings.device)
+    # loading pre-trained model, with previous utility - alpha pair
+    folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
+    folder_utility = "utility"+str(settings.utilities[0])+"/"
+    folder_alpha = "alpha"+str(settings.alphas[settings.starting_alpha_idx])+"/" # this is updated in the settings
+    json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight_unnorm) + '/seed' + str(seed) + '/'
+    json_file = json_file_path+"objective.json"
+    with open(json_file, 'r') as f:
+        existing_params = json.load(f)
+    convergence_epoch = existing_params["utility"+str(settings.utilities[0])]["inf_weight"+str(settings.alphas[settings.starting_alpha_idx])]['convergence epoch']
+    model_path = 'src/saved_models/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight_unnorm) + '/seed' + str(seed) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
+    speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
+    #speaker = VQVIB2(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, num_images=num_imgs)
+    listener = ListenerPragmaticsCosines(feature_len)
+    decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
+    model = Team(speaker, listener, decoder)
+    model.load_state_dict(torch.load(model_path + '/model.pt'))
+    model.to(settings.device)
+    
+    # new json document
+    json_file = json_file_path+"objective" + str(settings.starting_alpha_idx) + ".json"
+    existing_params = {}
+    with open(json_file, 'w') as f:
+        json.dump(existing_params, f)
 
-        folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-        folder_utility_type = "utility"+str(u)+"/"+ "alpha"+str(settings.alpha) + '/'
-        save_loc = 'src/saved_models/test/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' + folder_utility_type
-        train(model, train_data, val_data, viz_data, glove_data=glove_data, utility=u, p_notseedist=0, vae=vae_model, savepath=save_loc, comm_dim=c_dim, fieldname='topname', num_epochs=n_epochs, batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
+    # train this model with the new utility
+    starting_utility = settings.utilities[1]
+    folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
+    save_loc = 'src/saved_models/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight_unnorm) + '/seed' + str(seed) + '/'
+    json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight_unnorm) + '/seed' + str(seed) + '/'
+    train(model, train_data, val_data, viz_data, glove_data=glove_data, utility=starting_utility, p_notseedist=0, vae=vae_model, savepath=save_loc, objective_json=json_file_path, comm_dim=c_dim, fieldname='topname', batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
 
 
 if __name__ == '__main__':
@@ -404,17 +531,19 @@ if __name__ == '__main__':
     b_size = 1024
     c_dim = 128
     variational = True
-    settings.num_protos = 442 # 442 is the number of topnames in MN 
+    settings.num_protos = 3000 # 442 is the number of topnames in MN 
     # Measuring complexity takes a lot of time. For debugging other features, set to false.
-    do_calc_complexity = True
+    do_calc_complexity = False
     do_plot_comms = False
 
-    n_epochs = 201
-    settings.alpha = 8.5 # informativeness
-    settings.utilities =  [8] # utility
-    settings.kl_weight = 1.0 # complexity
+    settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12.8, 21, 33, 88, 140, 233] # informativeness
+    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12.8, 21, 33, 88, 140, 233]  # utility
+    settings.kl_weight_unnorm = 1.0 # complexity
     settings.kl_incr = 0.0 # complexity increase
-    
+    look_back = 10
+    epsilon_convergence = 0.0001
+    settings.starting_alpha_idx = 24
+   
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     settings.learned_marginal = False

@@ -14,7 +14,8 @@ class VQLayer(nn.Module):
         self.latent_dim = latent_dim
         self.trainable_quantizers = init_vectors is None
         # self.beta = beta
-        self.beta = 0.01 if settings.alpha == 0 else 0.25
+        #self.beta = 0.01 if settings.alpha == 0 else 0.25
+        self.beta = 0.25
         self.prototypes = nn.Parameter(data=torch.Tensor(num_protos, latent_dim))
         if init_vectors is not None:
             print("Manually specifying vector quantization for", len(init_vectors), "vectors.")
@@ -44,7 +45,7 @@ class VQLayer(nn.Module):
             embedding_loss = F.mse_loss(quantized_latents, mus.detach())
 
         # vq_loss = 1.0 * (commitment_loss * self.beta + 1.0 * embedding_loss)  # Lower VQ loss term seems useful when there's no autoencoding.
-        vq_loss = 1.0 * (commitment_loss * self.beta + 1.0 * embedding_loss)  # Weight of 0.01 for informativeness 0 seems best.
+        vq_loss = 1.0 * (commitment_loss * self.beta + 1.0 * embedding_loss)  
 
         # Compute the entropy of the distribution for which prototypes are used. Uses a differentiable approximation
         # for the distributions.
@@ -173,6 +174,12 @@ class VQ(nn.Module):
     def get_token_dist(self, x):
         assert settings.sample_first, "There's no distribution over protos if you don't sample first."
         with torch.no_grad():
+
+            # added
+            embedded_features = self.feature_embedder(x)
+            x = torch.reshape(embedded_features, (-1, self.hidden_dim * self.num_imgs))
+            ###
+        
             for i, layer in enumerate(self.layers):
                 x = layer(x)
                 x = F.relu(x)

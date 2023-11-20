@@ -1,5 +1,4 @@
 import os
-import json
 
 import numpy as np
 import pandas as pd
@@ -16,11 +15,10 @@ from src.data_utils.helper_fns import gen_batch, get_glove_embedding, get_unique
 from src.data_utils.read_data import get_feature_data
 from src.data_utils.read_data import load_cleaned_results
 from src.models.decoder import Decoder
-from src.models.listener_pragmatics import ListenerPragmatics, ListenerPragmaticsCosines
-from src.models.team import Team
+from src.models.listener_pragmatics import ListenerPragmatics
+from src.models.team import Team, TeamLexSem
 from src.models.vae import VAE
 from src.models.vq import VQ
-from src.models.vqvib2 import VQVIB2
 from src.models.mlp import MLP
 from src.models.proto import ProtoNetwork
 from src.utils.mine_pragmatics import get_cond_info
@@ -40,17 +38,13 @@ def evaluate(model, dataset, batch_size, p_notseedist, vae, glove_data, fieldnam
     for _ in range(num_test_batches):
         with torch.no_grad():
             speaker_obs, listener_obs, labels, _ = gen_batch(dataset, batch_size, fieldname, p_notseedist, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor, num_dist=num_dist)
-            outputs, _, _, recons = model(speaker_obs, listener_obs)
+            _, _, recons = model(speaker_obs)
             recons = torch.squeeze(recons, dim=1)
-        pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
-        num_correct += np.sum(pred_labels == labels.cpu().numpy())
-        num_total += pred_labels.size
+        
         total_recons_loss += torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2)).item()
-    acc = num_correct / num_total
     total_recons_loss = total_recons_loss / num_test_batches
-    print("Evaluation accuracy", acc)
     print("Evaluation recons loss", total_recons_loss)
-    return acc, total_recons_loss
+    return total_recons_loss
 
 
 
@@ -240,38 +234,37 @@ def eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data,
                     pass  # Just save the values from last time.
                 else:
                     settings.distinct_words = set_distinction
-                    acc, recons = evaluate(model, data, eval_batch_size, p_notseedist, vae, glove_data, fieldname=fieldname, num_dist=num_candidates - 1)
+                    recons = evaluate(model, data, eval_batch_size, p_notseedist, vae, glove_data, fieldname=fieldname, num_dist=num_candidates - 1)
                 relevant_metrics = num_cand_to_metrics.get(set_distinction).get(num_candidates)[feature_idx]
-                relevant_metrics.add_data(epoch, complexities[feature_idx], -1 * recons, acc, settings.kl_weight)
+                relevant_metrics.add_data(epoch, complexities[feature_idx], -1 * recons, None, settings.kl_weight)
 
     # Plot some of the metrics for online visualization
-    comm_accs = []
-    regressions = []
-    labels = []
-    epoch_idxs = None
-    plot_metric_data = num_cand_to_metrics.get(True)
-    for feature_idx, label in enumerate(['train', 'val']):
-        for num_candidates in sorted(plot_metric_data.keys()):
-            comm_accs.append(plot_metric_data.get(num_candidates)[feature_idx].comm_accs)
+#    regressions = []
+#    labels = []
+#    epoch_idxs = None
+#    plot_metric_data = num_cand_to_metrics.get(True)
+#    for feature_idx, label in enumerate(['train', 'val']):
+#        for num_candidates in sorted(plot_metric_data.keys()):
+#            comm_accs.append(plot_metric_data.get(num_candidates)[feature_idx].comm_accs)
 #            regressions.append(plot_metric_data.get(num_candidates)[feature_idx].embed_r2)
-            labels.append(" ".join([label, str(num_candidates), "utility"]))
-            if epoch_idxs is None:
-                epoch_idxs = plot_metric_data.get(num_candidates)[feature_idx].epoch_idxs
-    plot_metrics(comm_accs, labels, epoch_idxs, basepath=basepath)
+#            labels.append(" ".join([label, str(num_candidates), "utility"]))
+#            if epoch_idxs is None:
+#                epoch_idxs = plot_metric_data.get(num_candidates)[feature_idx].epoch_idxs
+#    plot_metrics(labels, epoch_idxs, basepath=basepath)
 #    plot_metrics(regressions, ['r2 score'], epoch_idxs, basepath=basepath + 'regression_')
     # Visualize some of the communication
-    try:
-        if plot_comms_flag:
-            col_name = 't_features' if settings.see_distractors_pragmatics else 'features'
-            plot_comms(model, viz_data[col_name], basepath)
-    except AssertionError:
-        print("Can't plot comms for whatever reason (e.g., continuous communication makes categorizing hard)")
+#    try:
+#        if plot_comms_flag:
+#            col_name = 't_features' if settings.see_distractors_pragmatics else 'features'
+#            plot_comms(model, viz_data[col_name], basepath)
+#    except AssertionError:
+#        print("Can't plot comms for whatever reason (e.g., continuous communication makes categorizing hard)")
     # Save the model and metrics to files.
-    for feature_idx, label in enumerate(['train', 'val']):
-        for set_distinction in num_cand_to_metrics.keys():
-            for num_candidates in sorted(num_cand_to_metrics.get(set_distinction).keys()):
-                metric = num_cand_to_metrics.get(set_distinction).get(num_candidates)[feature_idx]
-                metric.to_file(basepath + "_".join([label, str(set_distinction), str(num_candidates), "metrics"]))
+#    for feature_idx, label in enumerate(['train', 'val']):
+#        for set_distinction in num_cand_to_metrics.keys():
+#            for num_candidates in sorted(num_cand_to_metrics.get(set_distinction).keys()):
+#                metric = num_cand_to_metrics.get(set_distinction).get(num_candidates)[feature_idx]
+#                metric.to_file(basepath + "_".join([label, str(set_distinction), str(num_candidates), "metrics"]))
     if not save_model:
         return
     torch.save(model.state_dict(), basepath + 'model.pt')
@@ -279,10 +272,10 @@ def eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data,
 
 
 
-def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utility, vae, savepath, comm_dim, fieldname, num_epochs=3000, batch_size=1024, burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
+def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, vae, savepath, comm_dim, fieldname, num_epochs=3000, batch_size=1024, burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
     unique_topnames, _ = get_unique_labels(train_data)
 
-    criterion = nn.CrossEntropyLoss()
+    #criterion = nn.CrossEntropyLoss()
     #optimizer = optim.Adam(model.parameters(), lr=0.0001)  
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
@@ -293,7 +286,6 @@ def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utili
     for set_distinct in [True]:
         for empty_list in num_cand_to_metrics.get(set_distinct).values():
             empty_list.extend([PerformanceMetrics(), PerformanceMetrics()])  # Train metrics, validation metrics
-    
     settings.epoch = 0
     for epoch in range(num_epochs):
         settings.epoch += 1
@@ -301,42 +293,33 @@ def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utili
             settings.kl_weight += settings.kl_incr
 
         speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, p_notseedist, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
+
         start_time = time.time()
         optimizer.zero_grad()
-        outputs, speaker_loss, info, recons = model(speaker_obs, listener_obs)
-
-        loss = utility * criterion(outputs, labels)
-        #print("utility loss:", criterion(outputs, labels))
-        #print("utility loss weighted:", loss)
+        speaker_loss, info, recons = model(speaker_obs)
 
         if len(speaker_obs.shape) == 2:
             speaker_obs = torch.unsqueeze(speaker_obs, 1)
         # we only care about target reconstruction
-        recons_loss = torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2))
-        #print("inform loss:", recons_loss)
-        #print("inform loss weighted:", settings.alpha * recons_loss)
-        loss += settings.alpha * recons_loss
+        recons_loss = settings.alpha * torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2))
+        loss = recons_loss
         loss += speaker_loss
-        #print("complexity loss:", speaker_loss / settings.kl_weight)
-        #print("complexity loss weighted:", speaker_loss.item())
-        #print("Speaker loss fraction:\t", speaker_loss.item() / loss.item())
-        #print("Recons loss fraction:\t", settings.alpha * recons_loss.item() / loss.item())
-        
-        print("objective:", loss)
-
+        print("Speaker loss fraction:\t", speaker_loss.item() / loss.item())
+        print("Recons loss fraction:\t", settings.alpha * recons_loss.item() / loss.item())
         loss.backward()
+
         optimizer.step()
+
 
         end_time = time.time()
         # print("Elapsed time", end_time - start_time)
 
         # Metrics
-        pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
-        num_correct = np.sum(pred_labels == labels.cpu().numpy())
-        num_total = pred_labels.size
-        running_acc = running_acc * 0.95 + 0.05 * num_correct / num_total
+        #pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
+        #num_correct = np.sum(pred_labels == labels.cpu().numpy())
+        #num_total = pred_labels.size
+        #running_acc = running_acc * 0.95 + 0.05 * num_correct / num_total
         running_mse = running_mse * 0.95 + 0.05 * recons_loss.item()
-        
         if epoch % 100 == 0:
             print('epoch', epoch, 'of', num_epochs)
             # print("Overall loss", loss.item())
@@ -356,6 +339,9 @@ def run():
     else:
         num_imgs = 1 if not settings.see_distractor else (num_distractors + 1)
 
+    speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
+    decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
+
     data = get_feature_data(t_features_filename, excluded_ids=excluded_ids)
     data = data.sample(frac=1, random_state=seed) # Shuffle the data.
     train_data, test_data, val_data = np.split(data.sample(frac=1, random_state=seed), 
@@ -368,20 +354,12 @@ def run():
     #print("dropout:", settings.dropout)
     print("context:", settings.with_ctx_representation)
 
-    for u in settings.utilities:
-        # for each utility weight we load a model
-        speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
-        #listener = ListenerPragmatics(feature_len + num_imgs * feature_len, num_distractors+1, num_imgs=num_imgs)
-        #speaker = VQVIB2(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, num_images=num_imgs)
-        listener = ListenerPragmaticsCosines(feature_len)
-        decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
-        model = Team(speaker, listener, decoder)
-        model.to(settings.device)
+    model = TeamLexSem(speaker, decoder)
+    model.to(settings.device)
 
-        folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-        folder_utility_type = "utility"+str(u)+"/"+ "alpha"+str(settings.alpha) + '/'
-        save_loc = 'src/saved_models/test/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' + folder_utility_type
-        train(model, train_data, val_data, viz_data, glove_data=glove_data, utility=u, p_notseedist=0, vae=vae_model, savepath=save_loc, comm_dim=c_dim, fieldname='topname', num_epochs=n_epochs, batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
+    folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
+    save_loc = 'src/saved_models/' + str(settings.num_protos) + '/' + "lexsem_train/" + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' 
+    train(model, train_data, val_data, viz_data, glove_data=glove_data, p_notseedist=0, vae=vae_model, savepath=save_loc, comm_dim=c_dim, fieldname='topname', num_epochs=n_epochs, batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
 
 
 if __name__ == '__main__':
@@ -391,7 +369,7 @@ if __name__ == '__main__':
     if settings.see_distractors_pragmatics:
         settings.see_distractor = False # Mycal's one
     
-    settings.with_ctx_representation = False
+    settings.with_ctx_representation = True
     settings.dropout = False
     settings.see_probabilities = True
     
@@ -399,22 +377,21 @@ if __name__ == '__main__':
     
     num_distractors = 1
     settings.num_distractors = num_distractors
-    v_period = 100  # How often to test on the validation set and calculate various info metrics.
+    n_epochs = 3000 
+    v_period = 200  # How often to test on the validation set and calculate various info metrics.
     num_burnin = 500
     b_size = 1024
     c_dim = 128
     variational = True
-    settings.num_protos = 442 # 442 is the number of topnames in MN 
     # Measuring complexity takes a lot of time. For debugging other features, set to false.
     do_calc_complexity = True
     do_plot_comms = False
 
-    n_epochs = 201
-    settings.alpha = 8.5 # informativeness
-    settings.utilities =  [8] # utility
+    settings.num_protos = 442 # 442 is the number of topnames in MN 
+    settings.alpha = 1.0 # informativeness
     settings.kl_weight = 1.0 # complexity
-    settings.kl_incr = 0.0 # complexity increase
     
+    settings.kl_incr = 0.0
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     settings.learned_marginal = False
