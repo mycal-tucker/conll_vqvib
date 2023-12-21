@@ -427,6 +427,8 @@ def get_feature_data(features_filename,
     # Merge the feature data with the dataset data.
     manynames = load_cleaned_results(filename='src/data/manynames.tsv')
     manynames['vg_image_id'] = [str(i) for i in manynames['vg_image_id']]
+       
+    print("Loading features...")
     if settings.see_distractors_pragmatics:
         data_rows = []
         f =  open(features_filename).read().split('\n')
@@ -436,6 +438,7 @@ def get_feature_data(features_filename,
         if data_rows[-1] == ('', []):
             del data_rows[-1]
         feature_df = pd.DataFrame(data_rows, columns=['vg_image_id', 't_features'])    
+        
         data_rows = []
         f =  open(settings.d_features_filename).read().split('\n')
         for line in f:
@@ -444,6 +447,7 @@ def get_feature_data(features_filename,
         if data_rows[-1] == ('', []):
             del data_rows[-1]
         feature_df['d_features'] = [i[1] for i in data_rows]
+        
         data_rows = []
         f =  open(settings.ctx_features_filename).read().split('\n')
         for line in f:
@@ -452,14 +456,20 @@ def get_feature_data(features_filename,
         if data_rows[-1] == ('', []):
             del data_rows[-1]
         feature_df['ctx_features'] = [i[1] for i in data_rows]
+       
         if not settings.eval_someRE:
             f = pd.read_table(settings.d_bboxes_filename, header=None)
             feature_df['dist_xyxy'] = [i for i in f[3]] 
+
         merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
         merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
+        print("len after excluding ids:", len(merged_df))
+
         if not settings.eval_someRE:
             # on ManyNames images we want to use this function, but not on someRE
             merged_df = control_tar_dist_size(merged_df)
+    
+    
     else:
         data_rows = []
         f =  open(features_filename).read().split('\n')
@@ -469,6 +479,7 @@ def get_feature_data(features_filename,
         feature_df = pd.DataFrame(data_rows, columns=['vg_image_id', 'features'])
         merged_df = pd.merge(feature_df, manynames, on=['vg_image_id'])
         merged_df = merged_df[~merged_df.vg_image_id.isin(excluded_ids)]
+        print(len(merged_df))
 
     if len(desired_names) == 0 and len(excluded_names) == 0 and selected_fraction is None:
         return merged_df
@@ -510,6 +521,7 @@ def get_feature_data(features_filename,
             if np.random.random() < selected_fraction:
                 selected_names.add(name)
         merged_df = merged_df[merged_df['topname'].isin(selected_names)]
+    
     merged_df.reset_index(inplace=True)
     # Count the number of unique words used to describe items in the dataset
     unique_responses = set()

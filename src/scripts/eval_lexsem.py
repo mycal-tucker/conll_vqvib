@@ -32,52 +32,6 @@ import time
 from src.data_utils.read_data import get_glove_vectors
 
 
-def evaluate_training(model, dataset, p_train, batch_size, vae, glove_data, fieldname, num_dist=None):
-    model.eval()
-    num_test_batches = 10
-    num_correct = 0
-    total_recons_loss = 0
-    num_total = 0
-    for _ in range(num_test_batches):
-        with torch.no_grad():
-            speaker_obs, listener_obs, labels, _ = gen_batch(dataset, batch_size, fieldname, p_notseedist=p_train, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor, num_dist=num_dist)
-            outputs, _, _, recons = model(speaker_obs, listener_obs)
-            recons = torch.squeeze(recons, dim=1)
-        pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
-        num_correct += np.sum(pred_labels == labels.cpu().numpy())
-        num_total += pred_labels.size
-        total_recons_loss += torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2)).item()
-    acc = num_correct / num_total
-    total_recons_loss = total_recons_loss / num_test_batches
-    print("Training setup (" + str(p_train) + ")")
-    print("Evaluation on test set accuracy", acc)
-    print("Evaluation on test set recons loss", total_recons_loss)
-    return acc, total_recons_loss
-
-
-def evaluate_pragmatics(model, dataset, batch_size, vae, glove_data, fieldname, num_dist=None):
-    model.eval()
-    num_test_batches = 10
-    num_correct = 0
-    total_recons_loss = 0
-    num_total = 0
-    for _ in range(num_test_batches):
-        with torch.no_grad():
-            speaker_obs, listener_obs, labels, _ = gen_batch(dataset, batch_size, fieldname, p_notseedist=0, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor, num_dist=num_dist)
-            outputs, _, _, recons = model(speaker_obs, listener_obs)
-            recons = torch.squeeze(recons, dim=1)
-        pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
-        num_correct += np.sum(pred_labels == labels.cpu().numpy())
-        num_total += pred_labels.size
-        total_recons_loss += torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2)).item()
-    acc = num_correct / num_total
-    total_recons_loss = total_recons_loss / num_test_batches
-    print("Pragmatics")
-    print("Evaluation on test set accuracy", acc)
-    print("Evaluation on test set recons loss", total_recons_loss)
-    return acc, total_recons_loss
-
-
 def evaluate_lexsem(model, dataset, batch_size, vae, glove_data, fieldname, num_dist=None):
     model.eval()
     num_test_batches = 10
@@ -322,6 +276,7 @@ def get_relative_embedding_LEXSEM(model, vae, anchor_dataset, glove_data, rel_ab
     return res.correlation
 
 
+
 def run():
     if settings.see_distractors_pragmatics:
         num_imgs = 3 if settings.with_ctx_representation else 2
@@ -357,35 +312,38 @@ def run():
             for a in settings.alphas:
                 print(a)
                 
-                folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-                folder_utility = "utility"+str(u)+"/"
-                folder_alpha = "alpha"+str(a)+"/"
+                try:
+                    folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
+                    folder_utility = "utility"+str(u)+"/"
+                    folder_alpha = "alpha"+str(a)+"/"
 
-                # get convergence epoch for that model
-                json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/'
-                json_file = json_file_path+"objective_merged.json"
-                with open(json_file, 'r') as f:
-                    existing_params = json.load(f)
-                convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(a)]['convergence epoch']
-                # load model
-                model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
-                save_eval_path = model_to_eval_path + '/evaluation/'
-                model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
-                model.to(settings.device)
+                    # get convergence epoch for that model
+                    json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/'
+                    json_file = json_file_path+"objective_merged.json"
+                    with open(json_file, 'r') as f:
+                        existing_params = json.load(f)
+                    convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(a)]['convergence epoch']
+                    # load model
+                    model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
+                    save_eval_path = model_to_eval_path + '/evaluation/'
+                    model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
+                    model.to(settings.device)
 
-                print("Lexical semantics task") 
-                num_cand_to_metrics = {True: {2: []}}
-                for empty_list in num_cand_to_metrics.get(True).values():
-                    empty_list.extend([PerformanceMetrics()])
-                eval_model_lexsem(model, vae_model, c_dim, val_data, viz_data, glove_data, num_cand_to_metrics, save_eval_path, fieldname='topname', calculate_complexity=do_calc_complexity, plot_comms_flag=do_plot_comms)
-                #alignment_datasets = [get_rand_entries(val_data, num_examples) for _ in range(num_rand_trial)]
-                #consistency_scores = []
-                #for j, align_data in enumerate(alignment_datasets):
-                #    consistency_score = get_relative_embedding_LEXSEM(model, vae_model, align_data, glove_data, val_data, fieldname='responses')     
-                #    consistency_scores.append(consistency_score)
-                #print(consistency_scores)
-                #print("average:", sum(consistency_scores) / len(consistency_scores))
-
+                    print("Lexical semantics task") 
+                    num_cand_to_metrics = {True: {2: []}}
+                    for empty_list in num_cand_to_metrics.get(True).values():
+                        empty_list.extend([PerformanceMetrics()])
+                    eval_model_lexsem(model, vae_model, c_dim, val_data, viz_data, glove_data, num_cand_to_metrics, save_eval_path, fieldname='topname', calculate_complexity=do_calc_complexity, plot_comms_flag=do_plot_comms)
+                    #alignment_datasets = [get_rand_entries(val_data, num_examples) for _ in range(num_rand_trial)]
+                    #consistency_scores = []
+                    #for j, align_data in enumerate(alignment_datasets):
+                    #    consistency_score = get_relative_embedding_LEXSEM(model, vae_model, align_data, glove_data, val_data, fieldname='responses')     
+                    #    consistency_scores.append(consistency_score)
+                    #print(consistency_scores)
+                    #print("average:", sum(consistency_scores) / len(consistency_scores))
+                except: # not trained
+                    print(u, a, "not found")
+                    pass
 
 
 
@@ -399,7 +357,10 @@ if __name__ == '__main__':
     settings.see_probabilities = True
 
     settings.eval_someRE = False
-    
+   
+    settings.random_init = True
+    random_init_dir = "random_init/" if settings.random_init else ""
+
     num_distractors = 1
     settings.num_distractors = num_distractors
     n_epochs = 3000
@@ -412,11 +373,11 @@ if __name__ == '__main__':
     do_calc_complexity = False
     do_plot_comms = False
 
-    settings.num_protos = 3000 # 442 is the number of topnames in MN
-    settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12.8, 21, 33, 88, 140, 233]
-    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12.8, 21, 33, 88, 140, 233]
-    #settings.alphas =  [8.5, 9, 9.5, 10, 11, 12.8, 15, 21, 33, 55, 88, 140, 233]
-    #settings.utilities =   [8, 8.5, 9, 9.5, 10, 11, 12.8, 15, 21, 33, 55, 88, 140, 233]
+    settings.num_protos = 3000 # 442 is the number of topnames in MN 
+    #settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2.2, 3.7, 5, 6, 7, 8, 9, 10.5, 12.8, 21, 33, 88, 140, 200]
+    #settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 3.7, 5, 6, 7, 8, 10.5, 12.8, 21, 33, 88, 140, 200]
+    settings.alphas = [0, 0.1, 0.2, 0.4, 0.7, 0.9, 1, 1.2, 1.5, 2.2, 3, 3.7, 5, 7, 9, 21, 33, 88, 140, 200]
+    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2.2, 3, 3.7, 5, 7, 9, 12.8, 21, 33, 88, 140, 200, 1.1, 1.3, 1.7, 1.9]
     settings.kl_weight = 1.0 # complexity
     
     # to get alignment

@@ -189,6 +189,7 @@ class VQ(nn.Module):
                 samples = reparameterize(mu, logvar)
             else:
                 samples = self.fc_mu(x)
+
             # Now discretize
             dists_to_protos = torch.sum(samples ** 2, dim=1, keepdim=True) + \
                               torch.sum(self.vq_layer.prototypes ** 2, dim=1) - 2 * \
@@ -197,7 +198,8 @@ class VQ(nn.Module):
             encoding_one_hot = torch.zeros(closest_protos.size(0), self.vq_layer.num_protos).to(settings.device)
             encoding_one_hot.scatter_(1, closest_protos, 1)
             likelihoods = np.mean(encoding_one_hot.detach().cpu().numpy(), axis=0)
-        return likelihoods
+            
+        return likelihoods, dists_to_protos
 
     def snap_comms(self, x):
         reshaped = torch.reshape(x, (-1, self.proto_latent_dim))

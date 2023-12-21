@@ -1,7 +1,7 @@
 import os
 import json
 import glob
-
+import src.settings as settings
 
 def merge_json_files(file_pattern):
     merged_data = {}
@@ -29,8 +29,10 @@ file_pattern = 'objective*.json'
 
 
 def run():
-    files_dir = "src/saved_models/3000/without_ctx/kl_weight1.0/seed0"
-    savedir = "src/saved_models/3000/without_ctx/kl_weight1.0/seed0/objective_merged.json"
+    settings.random_init = True
+    random_init_dir = "random_init/" if settings.random_init else ""
+    files_dir = "src/saved_models/3000/" + random_init_dir + "without_ctx/kl_weight1.0/seed0"
+    savedir = "src/saved_models/3000/" + random_init_dir + "without_ctx/kl_weight1.0/seed0/objective_merged.json"
     file_pattern = os.path.join(files_dir, 'objective*.json')
     
     # merge the multiple files
@@ -38,7 +40,7 @@ def run():
     with open(savedir, 'w') as file:
         json.dump(merged_data, file, indent=4)
     # merge with objective.json
-    with open("src/saved_models/3000/without_ctx/kl_weight1.0/seed0/objective.json", 'r') as file:
+    with open("src/saved_models/3000/" + random_init_dir + "without_ctx/kl_weight1.0/seed0/objective.json", 'r') as file:
         data1 = json.load(file)
     with open(savedir, 'r') as file:
         data2 = json.load(file)

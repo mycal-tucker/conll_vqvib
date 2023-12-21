@@ -337,6 +337,7 @@ def run(plot_img_grids=True):
     print("Len test set:", len(test_data))
     print("Len val set:", len(val_data))
 
+    # with the validation set, we make sure that humans and models are talking about the same target
     val_data = val_data.loc[val_data['swapped_t_d'] == 0]
     val_data = val_data.reset_index(drop=True)
     print("Len val set non swapped:", len(val_data))
@@ -364,7 +365,7 @@ def run(plot_img_grids=True):
             folder_alpha = "alpha"+str(settings.alpha)+"/"
 
             json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/'
-            json_file = json_file_path+"objective.json"
+            json_file = json_file_path+"objective_merged.json"
             with open(json_file, 'r') as f:
                 existing_params = json.load(f)
             convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(settings.alpha)]['convergence epoch']
@@ -372,6 +373,7 @@ def run(plot_img_grids=True):
             model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
             model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
             model.to(settings.device)
+            model.eval()
 
             if viz_topname != None:
                 new_path = "Plots/" + str(settings.num_protos) + '/' + folder_utility + folder_alpha + folder_ctx + 'kl_weight' + str(settings.kl_weight) + "/" + viz_topname + "/"
@@ -404,7 +406,7 @@ def run(plot_img_grids=True):
             
             print("alpha:", settings.alpha)
             json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/'
-            json_file = json_file_path+"objective.json"
+            json_file = json_file_path+"objective_merged.json"
             with open(json_file, 'r') as f:
                 existing_params = json.load(f)
             convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(settings.alpha)]['convergence epoch']
@@ -413,7 +415,7 @@ def run(plot_img_grids=True):
             
             model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
             model.to(settings.device)
-
+            model.eval()
             
             folder_ctx_to_save = "with_ctx_" if settings.with_ctx_representation else "without_ctx_"
             #if viz_topname != None:
@@ -485,9 +487,9 @@ if __name__ == '__main__':
     do_calc_complexity = True
     do_plot_comms = False
     
-    settings.num_protos = 442
-    settings.alpha = 233 # informativeness
-    settings.utilities = [233]
+    settings.num_protos = 3000 #442
+    settings.alpha = 200 # informativeness
+    settings.utilities = [0]
     settings.kl_weight = 1.0 # complexity  
     settings.kl_incr = 0.0
     
@@ -526,5 +528,5 @@ if __name__ == '__main__':
     fieldname = "topname"
     viz_topname = None
 
-    run(plot_img_grids=False)
+    run(plot_img_grids=True)
 
