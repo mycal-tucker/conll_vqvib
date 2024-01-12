@@ -30,9 +30,9 @@ file_pattern = 'objective*.json'
 def run():
     settings.random_init = True
     random_init_dir = "random_init/" if settings.random_init else ""
-    files_dir = "src/saved_models/3000/" + random_init_dir + "without_ctx/kl_weight1.0/seed0"
-    savedir = "src/saved_models/3000/" + random_init_dir + "without_ctx/kl_weight1.0/seed0/objective_merged.json"
-    savedir_nans = "src/saved_models/3000/" + random_init_dir + "without_ctx/kl_weight1.0/seed0/objective_merged_nans.json"
+    files_dir = "src/saved_models/3000/" + random_init_dir + "without_ctx/missing/seed0"
+    savedir = "src/saved_models/3000/" + random_init_dir + "without_ctx/missing/seed0/objective_missing_merged.json"
+    savedir_nans = "src/saved_models/3000/" + random_init_dir + "without_ctx/missing/seed0/objective_missing_merged_nans.json"
     file_pattern = os.path.join(files_dir, 'objective*.json')
     
     # merge the multiple files
@@ -40,11 +40,11 @@ def run():
     with open(savedir, 'w') as file:
         json.dump(merged_data, file, indent=4)
     # merge with objective.json
-    if not os.path.exists("src/saved_models/3000/" + random_init_dir + "without_ctx/kl_weight1.0/seed0/objective.json"):
+    if not os.path.exists("src/saved_models/3000/" + random_init_dir + "without_ctx/missing/seed0/objective.json"):
         d = {}
-        with open("src/saved_models/3000/" + random_init_dir + "without_ctx/kl_weight1.0/seed0/objective.json", 'w') as file:
+        with open("src/saved_models/3000/" + random_init_dir + "without_ctx/missing/seed0/objective.json", 'w') as file:
             json.dump(d, file, indent=4)
-    with open("src/saved_models/3000/" + random_init_dir + "without_ctx/kl_weight1.0/seed0/objective.json", 'r') as file:
+    with open("src/saved_models/3000/" + random_init_dir + "without_ctx/missing/seed0/objective.json", 'r') as file:
         data1 = json.load(file)
     with open(savedir, 'r') as file:
         data2 = json.load(file)

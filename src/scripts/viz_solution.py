@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from sklearn.decomposition import PCA
 from sklearn.manifold import MDS
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import euclidean_distances, cosine_similarity
 from PIL import Image, ImageDraw
 
 import src.settings as settings
@@ -28,21 +28,79 @@ from src.models.vq import VQ
 from src.utils.mine_pragmatics import get_info, get_cond_info
 
 
-def visualize_solution(dataset, team, num_examples, save_path, sampled_id):
-   
-    # Given a dataset and a team, returns a list of EC comms for some entries in the data,
-    # as well as the English words for each of those entries.
+def download_images_per_vec(eval_type, save_dir, vector, dict_vect_imgs, img_infos, target, include_target=False):
+
+    #save_dir_ex = save_dir + "example"+str(ex) + "/"
+    #save_dir_vec = save_dir_ex + str(vector) + "/"
+    save_dir_eval = save_dir + eval_type +  "/"
+    if not os.path.exists(save_dir_eval):
+        os.makedirs(save_dir_eval)
+    save_dir_vec = save_dir_eval + str(vector) + "/"
+    if not os.path.exists(save_dir_vec):
+        os.makedirs(save_dir_vec)
+    
+    try:
+        sampled_images = random.sample(dict_vect_imgs[vector], 10)
+        if include_target:
+            sampled_images.append(target)
+        sampled_info = [img_infos[i] for i in sampled_images]
+    
+        targets,distractors = [], []
+        for tar_xyxy, dist_xyxy, tar_topname, is_swapped in sampled_info:
+            if is_swapped == 1:
+                distractors.append(tar_xyxy)
+                targets.append(ast.literal_eval(dist_xyxy)) 
+            else:
+                distractors.append(ast.literal_eval(dist_xyxy))
+                targets.append(tar_xyxy)
+
+        images = [Image.open(image_directory + i + ".jpg") for i in sampled_images]
+
+        for n,img,id_ in zip(range(len(images)), images, sampled_images):
+            # draw target
+            draw = ImageDraw.Draw(img)
+            red =  (255, 0, 0)
+            t_coord = [(targets[n][0], targets[n][1]), (targets[n][2], targets[n][3])]
+            draw.rectangle(t_coord, outline=red, width=4)
+                
+            if eval_type == "pragmatics":
+                # draw distractors
+                draw = ImageDraw.Draw(img)
+                blue =  (0, 0, 255)
+                d_coord = [(distractors[n][0], distractors[n][1]), (distractors[n][2], distractors[n][3])]
+                draw.rectangle(d_coord, outline=blue, width=6)
+
+            img.save(save_dir_vec + "/" + id_ + ".png","PNG")
+    
+    except ValueError:
+        pass
+
+
+def visualize_solution(dataset, team, num_examples, save_path_vecs, save_path_grids, sampled_id):
+    
+    # PROTOTYPES' SPACE
+    prototypes = team.speaker.vq_layer.prototypes.detach().cpu()
+    distance_matrix = euclidean_distances(prototypes)
+    similarity_dict = {} # we store the most similar prototypes (or in this case, the closest prototypes)
+    for i in range(len(prototypes)):
+        # The closest prototype has the smallest distance
+        sorted_indices = np.argsort(distance_matrix[i])
+        sorted_indices = sorted_indices[sorted_indices != i]  # exclude self-distance
+        similarity_dict[i] = sorted_indices.tolist()
 
     # LEXICAL-SEMANTICS
-    ids_to_comms = {}
-    img_infos = {}
+    ids_to_comms = {} # image ids to comm vectors
+    img_infos_lexsem = {} # images info
+    ids_to_protos = {} # images ids to index of prototype sent
+    EC_words_lexsem = {i: [] for i in range(3000)} # keys are prototypes, values are images' indeces
     for targ_idx in list(dataset.index.values):
         vg_image_id = dataset['vg_image_id'][targ_idx]
         tar_xywh = dataset['bbox_xywh'][targ_idx]
         tar_xyxy = [tar_xywh[0], tar_xywh[1], tar_xywh[0]+tar_xywh[2], tar_xywh[1]+tar_xywh[3]]
         dist_xyxy = dataset['dist_xyxy'][targ_idx]
         tar_topname = dataset['topname'][targ_idx]
-        img_infos[vg_image_id] = [tar_xyxy, dist_xyxy, tar_topname]
+        is_swapped = dataset['swapped_t_d'][targ_idx]
+        img_infos_lexsem[vg_image_id] = [tar_xyxy, dist_xyxy, tar_topname, is_swapped]
 
         speaker_obs, _, _, _ = gen_batch(dataset, 1, fieldname, p_notseedist=1, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors, preset_targ_idx=targ_idx)
         
@@ -51,181 +109,149 @@ def visualize_solution(dataset, team, num_examples, save_path, sampled_id):
             with torch.no_grad():
                 comm, _, _ = team.speaker(speaker_obs)
                 np_comm = comm.detach().cpu().numpy()
+                ids_to_comms[vg_image_id] = np_comm[0]
+                likelihood, _ = team.speaker.get_token_dist(speaker_obs)
+                index_of_one = torch.argmax(torch.tensor(likelihood)).item()
+                ids_to_protos[vg_image_id] = index_of_one
+                EC_words_lexsem[index_of_one].append(vg_image_id)
+        else : # there is no Glove embedding for that preset_targ_idx
+            pass
+ 
+    if not os.path.exists(save_path_vecs):
+        os.makedirs(save_path_vecs)
+
+    print("EC word used lexsem:", ids_to_protos[sampled_id])   
+    vector_lex = ids_to_protos[sampled_id]
+    
+    
+    # PRAGMATICS
+    ids_to_comms = {} # image ids to comm vectors
+    img_infos_prag = {} # images info
+    ids_to_protos = {} # images ids to index of prototype sent
+    EC_words_prag = {i: [] for i in range(3000)}
+    for targ_idx in list(dataset.index.values):
+        vg_image_id = dataset['vg_image_id'][targ_idx]
+        tar_xywh = dataset['bbox_xywh'][targ_idx]
+        tar_xyxy = [tar_xywh[0], tar_xywh[1], tar_xywh[0]+tar_xywh[2], tar_xywh[1]+tar_xywh[3]]
+        dist_xyxy = dataset['dist_xyxy'][targ_idx]
+        tar_topname = dataset['topname'][targ_idx]
+        is_swapped = dataset['swapped_t_d'][targ_idx]
+        img_infos_prag[vg_image_id] = [tar_xyxy, dist_xyxy, tar_topname, is_swapped]
+        
+        speaker_obs, _, _, _ = gen_batch(dataset, 1, fieldname, p_notseedist=0, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors, preset_targ_idx=targ_idx)
+
+        if speaker_obs != None:
+            # Now get the EC for that speaker obs
+            with torch.no_grad():
+                comm, _, _ = team.speaker(speaker_obs)
+                np_comm = comm.detach().cpu().numpy()
                 # comms.append(np_comm)
+                likelihood, _ = team.speaker.get_token_dist(speaker_obs)
+                index_of_one = torch.argmax(torch.tensor(likelihood)).item()
+                ids_to_protos[vg_image_id] = index_of_one
+                EC_words_prag[index_of_one].append(vg_image_id)
                 ids_to_comms[vg_image_id] = np_comm[0]
         else : # there is no Glove embedding for that preset_targ_idx
             pass
 
-    arrays = np.array(list(ids_to_comms.values()))
-    matrix = cosine_similarity(arrays)
-    #print(np.argwhere(matrix > 0.95))
-    df_matrix = pd.DataFrame(matrix)
-    df_matrix.columns = list(ids_to_comms.keys())
-    df_matrix.index = list(ids_to_comms.keys())
-    
-    row_values = df_matrix.loc[sampled_id]
-    top_columns = list(row_values[row_values > 0.99].index)
-    if len(top_columns) > 1:
-        #top_columns = list(row_values.nlargest(10).index)
-        top_columns.remove(sampled_id)  # make sure that the sampled_id is in first position (in case there are multiple comm vectors with sim=1)
-        top_columns.insert(0, sampled_id)
-        info_to_write = [str(round(i,2)) for i in row_values[row_values > 0.99]]
-        #info_to_write = [str(round(i,3)) for i in row_values.nlargest(10)]
-        info_to_write[0] = img_infos[sampled_id][2]
-        targets = [img_infos[i][0] for i in top_columns]
-        distractors = [ast.literal_eval(img_infos[i][1]) for i in top_columns]
+    print("EC word used pragmatics:", ids_to_protos[sampled_id])   
+    vector_prag = ids_to_protos[sampled_id]
 
-#### PLOT: images with closest communication vector
-        fig, axes = plt.subplots(nrows=2, ncols=5, figsize=(10, 6))
-        for i, ax in enumerate(axes.flat):
-            if i < len(top_columns):
-                # Load and display the image
-                image_path = image_directory + top_columns[i] + ".jpg"
-                #img = mpimg.imread(image_path)
-                img = Image.open(image_path)
-                ax.imshow(img)
-            
-                # draw target
-                draw = ImageDraw.Draw(img)
-                red =  (255, 0, 0)
-                t_coord = [(targets[i][0], targets[i][1]), (targets[i][2], targets[i][3])]
-                draw.rectangle(t_coord, outline=red, width=4)
+    #if vector_prag != vector_lex:
+    if not os.path.exists(save_path_vecs):
+        os.makedirs(save_path_vecs)
+        
+    # download images for vector pragmatics
+    download_images_per_vec("pragmatics", save_path_vecs, vector_prag, EC_words_prag, img_infos_prag, sampled_id, include_target=True)
 
-                # draw distractor
-                #draw = ImageDraw.Draw(img)
-                #blue =  (0, 0, 255)
-                #d_coord = [(distractors[i][0], distractors[i][1]), (distractors[i][2], distractors[i][3])]
-                #draw.rectangle(d_coord, outline=blue, width=4)
-
-                ax.imshow(img)
-
-                ax.axis('off')  # Turn off the axis labels for cleaner display
-                ax.text(0.5, 1.05, info_to_write[i], horizontalalignment='center', verticalalignment='center', transform=ax.transAxes, fontsize=12, color='black')
-
-            else:
-                # Remove any unused subplots
-                fig.delaxes(ax)
-    
-        plt.suptitle("Lexical-semantics")    
-        plt.tight_layout()
-        if viz_topname:
-            plt.savefig(save_path + "top_comm_"+viz_topname+"_"+sampled_id+"_lexsem.jpg")
-        else:
-            plt.savefig(save_path + "top_comm_"+sampled_id+"_lexsem.jpg")
-
-        # PRAGMATICS
-        ids_to_comms = {}
-        img_infos = {}
-        for targ_idx in list(dataset.index.values):
-            vg_image_id = dataset['vg_image_id'][targ_idx]
-            tar_xywh = dataset['bbox_xywh'][targ_idx]
-            tar_xyxy = [tar_xywh[0], tar_xywh[1], tar_xywh[0]+tar_xywh[2], tar_xywh[1]+tar_xywh[3]]
-            dist_xyxy = dataset['dist_xyxy'][targ_idx]
-            tar_topname = dataset['topname'][targ_idx]
-            img_infos[vg_image_id] = [tar_xyxy, dist_xyxy, tar_topname]
-
-            speaker_obs, _, _, _ = gen_batch(dataset, 1, fieldname, p_notseedist=0, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors, preset_targ_idx=targ_idx)
-
-            if speaker_obs != None:
-                # Now get the EC for that speaker obs
-                with torch.no_grad():
-                    comm, _, _ = team.speaker(speaker_obs)
-                    np_comm = comm.detach().cpu().numpy()
-                    # comms.append(np_comm)
-                    ids_to_comms[vg_image_id] = np_comm[0]
-            else : # there is no Glove embedding for that preset_targ_idx
-                pass
-
-        arrays = np.array(list(ids_to_comms.values()))
-        matrix = cosine_similarity(arrays)
-        df_matrix = pd.DataFrame(matrix)
-        df_matrix.columns = list(ids_to_comms.keys())
-        df_matrix.index = list(ids_to_comms.keys())
-
-        row_values = df_matrix.loc[sampled_id]
-        top_columns = list(row_values[row_values > 0.99].index)
-        #top_columns = list(row_values.nlargest(10).index)
-        top_columns.remove(sampled_id)  # make sure that the sampled_id is in first position (in case there are multiple comm vectors with sim=1)
-        top_columns.insert(0, sampled_id)
-        info_to_write = [str(round(i,2)) for i in row_values[row_values > 0.99]]
-        #info_to_write = [str(round(i,3)) for i in row_values.nlargest(10)]
-        info_to_write[0] = img_infos[sampled_id][2]
-        targets = [img_infos[i][0] for i in top_columns]
-        distractors = [ast.literal_eval(img_infos[i][1]) for i in top_columns]
-
-#### PLOT: images with closest communication vector
-        fig, axes = plt.subplots(nrows=2, ncols=5, figsize=(10, 6))
-        for i, ax in enumerate(axes.flat):
-            if i < len(top_columns):
-                # Load and display the image
-                image_path = image_directory + top_columns[i] + ".jpg"
-                #img = mpimg.imread(image_path)
-                img = Image.open(image_path)
-                ax.imshow(img)
-
-                # draw target
-                draw = ImageDraw.Draw(img)
-                red =  (255, 0, 0)
-                t_coord = [(targets[i][0], targets[i][1]), (targets[i][2], targets[i][3])]
-                draw.rectangle(t_coord, outline=red, width=4)
-
-                # draw distractor
-                draw = ImageDraw.Draw(img)
-                blue =  (0, 0, 255)
-                d_coord = [(distractors[i][0], distractors[i][1]), (distractors[i][2], distractors[i][3])]
-                draw.rectangle(d_coord, outline=blue, width=4)
-
-                ax.imshow(img)
-
-                ax.axis('off')  # Turn off the axis labels for cleaner display
-                ax.text(0.5, 1.05, info_to_write[i], horizontalalignment='center', verticalalignment='center', transform=ax.transAxes, fontsize=12, color='black')
-
-            else:
-                # Remove any unused subplots
-                fig.delaxes(ax)
-
-        plt.suptitle("Pragmatics")
-        plt.tight_layout()
-        if viz_topname:
-            plt.savefig(save_path + "top_comm_"+viz_topname+"_"+sampled_id+"_pragmatics.jpg")
-        else:
-            plt.savefig(save_path + "top_comm_"+sampled_id+"_pragmatics.jpg")
-
-    
+    # download images for vector lexsem and related ones
+    for j in range(100):
+        vec_close = similarity_dict[vector_lex][j]
+        if len(EC_words_lexsem[vec_close]) >= 10:
+            break
+    print("close vector:", vec_close)
+    # and the furthest
+    similarity_dict[vector_lex].reverse()
+    for j in range(100):
+        vec_far = similarity_dict[vector_lex][j]
+        if len(EC_words_lexsem[vec_far]) >= 10:
+            break
+    print("far vector:", vec_far)
+        
+    download_images_per_vec("lexsem", save_path_vecs, vector_lex, EC_words_lexsem, img_infos_lexsem, sampled_id, include_target=True)
+    download_images_per_vec("lexsem", save_path_vecs, vec_close, EC_words_lexsem, img_infos_lexsem, sampled_id, include_target=False)
+    download_images_per_vec("lexsem", save_path_vecs, vec_far, EC_words_lexsem, img_infos_lexsem, sampled_id, include_target=False)
 
 
-#### PLOT: histogram of topnames of closest images
-        top_columns_100 = list(row_values.nlargest(100).index)
-        closest_topnames = [img_infos[i][2] for i in top_columns_100]
-        topname_counts = {}
-        for name in closest_topnames:
-            topname_counts[name] = topname_counts.get(name, 0) + 1
+        # plot the prototypes
+    pca = PCA(n_components=2)
+    reduced_proto = pca.fit_transform(prototypes)
 
-        sorted_topname_counts = sorted(topname_counts.items(), key=lambda x: x[1], reverse=True)
-        topname_labels, topname_frequencies = zip(*sorted_topname_counts)
-        topname_values = np.arange(len(topname_labels))
+    x_coords, y_coords = zip(*reduced_proto)
 
-        plt.figure(figsize=(12, 6))  # Adjust the figure size as per your requirement
-        plt.bar(topname_values, topname_frequencies)
-        plt.xlabel('Names')
-        plt.ylabel('Frequency')
-        plt.title(str(img_infos[sampled_id][2]))
-        plt.xticks(topname_values, topname_labels, rotation=90)  # Rotate x-axis labels if necessary
-        plt.show()
-        plt.savefig(save_path + "topnames_closest_"+sampled_id+"_lexsem.jpg")
+    colors = ['grey'] * len(reduced_proto)
+    sizes = [20] * len(reduced_proto)
+    marker_styles = ['o'] * len(reduced_proto)  # Default shape
+
+    colors[vector_lex] = 'blue'
+    colors[vec_close] = 'green'
+    colors[vec_far] = 'red'
+    colors[vector_prag] = 'orange'
+    sizes[vector_lex] = 100  # Bigger size for colored dots
+    sizes[vec_close] = 100
+    sizes[vec_far] = 100
+    sizes[vector_prag] = 100
+    marker_styles[vector_lex] = '*'  # Star shape for colored dots
+    marker_styles[vec_close] = '*'
+    marker_styles[vec_far] = '*'
+    marker_styles[vector_prag] = '*'
+
+    plt.figure(figsize=(6.5, 5))
+    for i in range(len(x_coords)):
+        plt.scatter(x_coords[i], y_coords[i], color=colors[i], s=sizes[i], marker=marker_styles[i], alpha=0.3 if colors[i] == 'grey' else 1)
+    plt.xlabel('PC1')
+    plt.ylabel('PC2')
+    plt.grid(False)
+    plt.xticks([])  # This will remove the x-axis ticks
+    plt.yticks([])  # This will remove the y-axis ticks
+
+    plt.show()
+
+    plt.savefig(save_path_vecs + "vectors.png",dpi=300)
+
+
+   
+        #### PLOT: histogram of topnames of closest images
+        #top_columns_100 = list(row_values.nlargest(100).index)
+        #closest_topnames = [img_infos[i][2] for i in top_columns_100]
+        #topname_counts = {}
+        #for name in closest_topnames:
+        #    topname_counts[name] = topname_counts.get(name, 0) + 1
+
+        #sorted_topname_counts = sorted(topname_counts.items(), key=lambda x: x[1], reverse=True)
+        #topname_labels, topname_frequencies = zip(*sorted_topname_counts)
+        #topname_values = np.arange(len(topname_labels))
+
+        #plt.figure(figsize=(12, 6))  # Adjust the figure size as per your requirement
+        #plt.bar(topname_values, topname_frequencies)
+        #plt.xlabel('Names')
+        #plt.ylabel('Frequency')
+        #plt.title(str(img_infos[sampled_id][2]))
+        #plt.xticks(topname_values, topname_labels, rotation=90)  # Rotate x-axis labels if necessary
+        #plt.show()
+        #plt.savefig(save_path + "topnames_closest_"+sampled_id+"_lexsem.jpg")
     
     # if no 2 images found for the same word
-    else:
-        pass
+#    else:
+#        pass
 
 
 
 
 
 def vis_sim_per_word(dataset, team, sampled_id):
-
-    # Given a dataset and a team, returns a list of EC comms for some entries in the data,
-    # as well as the English words for each of those entries.
+    
+    #To get the cosine similarity between objects for which the same word is used.
 
     # PRAGMATICS
     ids_to_comms = {}
@@ -347,6 +373,8 @@ def run(plot_img_grids=True):
     decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
     model = Team(speaker, listener, decoder)
 
+    random_init_dir = "random_init/" if settings.random_init else "anneal/"
+
     if viz_topname != None:
         val_data = val_data.loc[val_data['topname'] == viz_topname]
         
@@ -364,30 +392,37 @@ def run(plot_img_grids=True):
             folder_utility = "utility"+str(u)+"/"
             folder_alpha = "alpha"+str(settings.alpha)+"/"
 
-            json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/'
-            json_file = json_file_path+"objective_merged.json"
-            with open(json_file, 'r') as f:
-                existing_params = json.load(f)
-            convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(settings.alpha)]['convergence epoch']
-            # load model
-            model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
-            model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
-            model.to(settings.device)
-            model.eval()
-
-            if viz_topname != None:
-                new_path = "Plots/" + str(settings.num_protos) + '/' + folder_utility + folder_alpha + folder_ctx + 'kl_weight' + str(settings.kl_weight) + "/" + viz_topname + "/"
-            else:
-                new_path = "Plots/" + str(settings.num_protos) + '/' + folder_utility + folder_alpha + folder_ctx + 'kl_weight' + str(settings.kl_weight) + "/"
-            if not os.path.exists(new_path):
-                os.makedirs(new_path)
+            # to save images per vector
+            model_id = "utility" + str(u) + "_alpha" + str(settings.alpha) + "/"
             
-            for s in sampled_images:
-                visualize_solution(train_data, model, num_examples=110, save_path=new_path, sampled_id=s)
+            for ex,s in zip(range(len(sampled_images)), sampled_images):
+                new_path_vecs = "Plots/" + str(settings.num_protos) + '/' + random_init_dir + "EC_comm/" + model_id + "/" + "example" + str(ex) + "/"
+
+                json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/'
+                json_file = json_file_path+"objective_merged.json"
+                with open(json_file, 'r') as f:
+                    existing_params = json.load(f)
+                convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(settings.alpha)]['convergence epoch']
+                # load model
+                model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
+                model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
+                model.to(settings.device)
+                model.eval()
+
+                # to save image grids
+                if viz_topname != None:
+                    new_path = "Plots/" + str(settings.num_protos) + '/' + random_init_dir + "EC_comm/" + folder_utility + folder_alpha + folder_ctx + 'kl_weight' + str(settings.kl_weight) + "/" + viz_topname + "/"
+                else:
+                    new_path = "Plots/" + str(settings.num_protos) + '/' + random_init_dir + "EC_comm/" + folder_utility + folder_alpha + folder_ctx + 'kl_weight' + str(settings.kl_weight) + "/"
+                if not os.path.exists(new_path):
+                    os.makedirs(new_path)
+                
+                print(ex, s)
+                visualize_solution(train_data, model, num_examples=110, save_path_vecs=new_path_vecs, save_path_grids=new_path, sampled_id=s)
                  
     else:
 
-        # PLOTS DISTRACTORS' AND TARGETS' SIMILARITIES
+        # CHECK DISTRACTORS' AND TARGETS' SIMILARITIES
         # sample N images, average across seeds and across images
 
         prag_tar_sim, prag_dist_sim, lex_tar_sim, lex_dist_sim = [], [], [], []
@@ -405,13 +440,15 @@ def run(plot_img_grids=True):
             folder_alpha = "alpha"+str(settings.alpha)+"/"
             
             print("alpha:", settings.alpha)
-            json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/'
+            model_id = "utility" + str(u) + "_alpha" + str(settings.alpha) + "/"
+
+            json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/'
             json_file = json_file_path+"objective_merged.json"
             with open(json_file, 'r') as f:
                 existing_params = json.load(f)
             convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(settings.alpha)]['convergence epoch']
             # load model
-            model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
+            model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(sampled_seed[0]) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
             
             model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
             model.to(settings.device)
@@ -448,19 +485,7 @@ def run(plot_img_grids=True):
         print("Lexsem, targets:", lex_tar_sim)
         print("Pragm, targets:", prag_tar_sim)
         print("Pragm, distractors:", prag_dist_sim)
-        #fig1 = plt.figure()
-        #plt.plot(settings.p_notseedist, lex_tar_sim, label="Same word as in lex - tar sim")
-        #plt.plot(settings.p_notseedist, prag_tar_sim, label="Same word as in pragm - tar sim")
-        ##plt.plot(settings.p_notseedist, prag_dist_sim, label="Same word as in pragm - dist sim")
-        ##plt.plot(settings.p_notseedist, lex_dist_sim, label="Same word as in lex - dist sim")
-        #x_label = "p dropout" if settings.dropout else "prob not see distractor"
-        #plt.xlabel(x_label)
-        #plt.ylabel("Object visual similarity")
-        #plt.legend()
-        #plt.ylim(0.70, 1)
-        #plt.title()
-        #fig1.savefig(new_path + "solution_viz_similarity"+ str(settings.sim_threshold) +".png")
-  
+
 
 
 if __name__ == '__main__':
@@ -472,6 +497,8 @@ if __name__ == '__main__':
     settings.dropout = False
     settings.see_probabilities = True
     
+    settings.random_init = True
+
     settings.eval_someRE = False
     settings.sim_threshold = 0.99
 
@@ -489,7 +516,7 @@ if __name__ == '__main__':
     
     settings.num_protos = 3000 #442
     settings.alpha = 200 # informativeness
-    settings.utilities = [0]
+    settings.utilities = [140] 
     settings.kl_weight = 1.0 # complexity  
     settings.kl_incr = 0.0
     

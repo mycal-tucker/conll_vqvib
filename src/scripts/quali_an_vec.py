@@ -29,82 +29,192 @@ from src.models.vae import VAE
 from src.models.vq import VQ 
 
 
-def normalize(values):
+# function to normalize the weights and adjust the rounding operation so that they sum to 1
+def normalize_and_adjust(values):
     total = sum(values)
-    return tuple(round(value / total, 2) for value in values)
+    normalized = [round(value / total, 2) for value in values]
+    rounding_error = 1 - sum(normalized)
+    # adjust the largest value(s) by the rounding error
+    if rounding_error != 0:
+        max_value = max(normalized)
+        indexes_of_max = [i for i, v in enumerate(normalized) if v == max_value]
+        error_per_value = rounding_error / len(indexes_of_max)
+        for index in indexes_of_max:
+            normalized[index] += error_per_value
+    return [round(i,3) for i in normalized]
 
 
-def get_image_per_vec(dataset, team, num_examples, num_vectors_to_check): 
 
-    # PRAGMATICS
+
+def get_image_per_vec(dataset, team, num_data, save_dir, num_examples): 
+    
+    prototypes = team.speaker.vq_layer.prototypes.detach().cpu()
+    
+    # pairwise similarity between prototypes
+    similarity_matrix = cosine_similarity(prototypes)    
+    similarity_dict = {} # we store the most similar prototypes
+    for i in range(len(prototypes)):
+        sorted_indices = np.argsort(-similarity_matrix[i])
+        sorted_indices = sorted_indices[sorted_indices != i]
+        similarity_dict[i] = sorted_indices.tolist()
+
+    # images' info
+    img_infos = {}
+    for targ_idx in list(dataset.index.values):
+        vg_image_id = dataset['vg_image_id'][targ_idx]
+        tar_xywh = dataset['bbox_xywh'][targ_idx]
+        tar_xyxy = [tar_xywh[0], tar_xywh[1], tar_xywh[0]+tar_xywh[2], tar_xywh[1]+tar_xywh[3]]
+        dist_xyxy = dataset['dist_xyxy'][targ_idx]
+        tar_topname = dataset['topname'][targ_idx]
+        img_infos[targ_idx] = [tar_xyxy, dist_xyxy, tar_topname]
+    
+    
+    # LEXSEM
     comms = []        
-    speaker_obs, _, _, _ = gen_batch(dataset, num_examples, fieldname, p_notseedist=0, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors)
+    speaker_obs, _, _, _ = gen_batch(dataset, num_data, fieldname, p_notseedist=1, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors)
 
-    #prototypes = team.speaker.vq_layer.prototypes
-    #import torch.nn.functional as F
-    #from scipy.spatial.distance import squareform
-    #prototypes = prototypes.detach().cpu()
-    #pairwise_distances = F.pdist(prototypes, p=2)
-    #distance_matrix = squareform(pairwise_distances.numpy())
-    #print(distance_matrix)
-    #print(np.max(distance_matrix, axis=0))
-
-    EC_distr, EC_words = [], []
-    for x in speaker_obs:
-        likelihood, distances = team.speaker.get_token_dist(x)
-        EC_distr.append(distances.detach().cpu().numpy())
+    EC_words = {i: [] for i in range(3000)}
+    for num,x in enumerate(speaker_obs):
+        likelihood, _ = team.speaker.get_token_dist(x)
+#        EC_distr.append(_.detach().cpu().numpy())
         index_of_one = torch.argmax(torch.tensor(likelihood)).item()
-        EC_words.append(index_of_one)
+        EC_words[index_of_one].append(num)
+    
+    used = {}
+    for k,v in EC_words.items():
+        if len(v) > 10:
+            used[k] = v 
 
-    vecs = random.sample(EC_words, num_vectors_to_check)
-    vecs = [l[0] for l in Counter(EC_words).most_common(num_vectors_to_check)] # EC words most commonly used 
-    print(Counter(EC_words).most_common(num_vectors_to_check))
+    # we check images for the 2 vectors
+    for ex in range(num_examples):
+        print("___EX", ex, "___")
+        # we sample one vector
+        vec = 2112
+        #vec = random.sample(list(used.keys()), 1)[0]
+        print("vector:", vec)
+        # and take the closest one
+        for i in similarity_dict[vec]:
+            if i in used.keys():
+                vec_close = i
+                break
+        print("close vector:", vec_close)
+        similarity_dict[vec].reverse()
+        for i in similarity_dict[vec]:
+            if i in used.keys():
+                vec_far = i
+                break
+        print("far vector:", vec_far)
+        for v in [vec, vec_close, vec_far]:
+            save_dir_ex = save_dir + "example"+str(ex) + "/"
+            save_dir_vec = save_dir_ex + str(v) + "/" 
+            if not os.path.exists(save_dir_vec):
+                os.makedirs(save_dir_vec)
+            os.makedirs(save_dir_vec+"lexsem/")
+            os.makedirs(save_dir_vec+"pragmatics/")
+
+            sampled_images = random.sample(used[v], 10)
+    
+            targets = [img_infos[i][0] for i in sampled_images]
+            images = [Image.open(image_directory + dataset.iloc[idx]['vg_image_id'] + ".jpg") for idx in sampled_images]
+    
+            for n,img in enumerate(images):
+                # draw target
+                draw = ImageDraw.Draw(img)
+                red =  (255, 0, 0)
+                t_coord = [(targets[n][0], targets[n][1]), (targets[n][2], targets[n][3])]
+                draw.rectangle(t_coord, outline=red, width=4)
+
+                img.save(save_dir_vec + "lexsem/img" + str(n) + ".png","PNG")
 
 
-    matrix = np.matrix(np.array(EC_distr))
-    print(matrix)
-    min_dist_all = np.argsort(matrix, axis=0)
-    print(min_dist_all)
+            # and we check what happens in pragmatics for the same vectors
+            # PRAGMATICS
+            comms = []
+            speaker_obs, _, _, _ = gen_batch(dataset, num_examples, fieldname, p_notseedist=0, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors)
 
-#    max_dist_all = np.argsort(-matrix, axis=0)
+            EC_words = {i: [] for i in range(3000)}
+            for num,x in enumerate(speaker_obs):
+                likelihood, _ = team.speaker.get_token_dist(x)
+#               EC_distr.append(_.detach().cpu().numpy())
+                index_of_one = torch.argmax(torch.tensor(likelihood)).item()
+                EC_words[index_of_one].append(num)
+
+            try:
+                sampled_images = random.sample(EC_words[v], 10)
+            except:
+                sampled_images = EC_words[v]
+            targets = [img_infos[i][0] for i in sampled_images]
+            distractors = [ast.literal_eval(img_infos[i][1]) for i in sampled_images]
+
+            images = [Image.open(image_directory + dataset.iloc[idx]['vg_image_id'] + ".jpg") for idx in sampled_images]
+
+            for n,img in enumerate(images):
+                # draw target
+                draw = ImageDraw.Draw(img)
+                red =  (255, 0, 0)
+                t_coord = [(targets[n][0], targets[n][1]), (targets[n][2], targets[n][3])]
+                draw.rectangle(t_coord, outline=red, width=4)
+                
+                # draw distractor
+                draw = ImageDraw.Draw(img)
+                blue =  (0, 0, 255)
+                d_coord = [(distractors[n][0], distractors[n][1]), (distractors[n][2], distractors[n][3])]
+                draw.rectangle(d_coord, outline=blue, width=4)
+
+                img.save(save_dir_vec + "pragmatics/img" + str(n) + ".png","PNG")
+
+    
+        # plot the prototypes
+        pca = PCA(n_components=2)
+        reduced_proto = pca.fit_transform(prototypes)
+
+        x_coords, y_coords = zip(*reduced_proto)
+
+        colors = ['grey'] * len(reduced_proto)
+        colors[vec] = 'blue'  
+        colors[vec_close] = 'green' 
+        colors[vec_far] = 'red'   
+
+        plt.figure(figsize=(8, 6))
+        plt.scatter(x_coords, y_coords, color=colors)
+        plt.title('EC words')
+        plt.xlabel('PC1')
+        plt.ylabel('PC2')
+        plt.grid(False)
+
+        plt.show()
+
+        plt.savefig(save_dir_ex +"vectors.png")
 
 
-    for i in vecs:
-        min_dist = [j[0][0].item() for j in min_dist_all[:5, i]]
-#        max_dist = [j[0][0].item() for j in max_dist_all[:5, i]]
 
-        print(f"Vector {i}:")
-        print(f" most probable images: {min_dist}")
-#        print(f" least probable images: {max_dist}")
-        
-#        margin = 10
 
-#        min_images = [Image.open(image_directory + dataset.iloc[idx]['vg_image_id'] + ".jpg") for idx in min_dist]
-#        max_images = [Image.open(image_directory + dataset.iloc[idx]['vg_image_id'] + ".jpg") for idx in max_dist]
-        
 
-#        fig, axes = plt.subplots(nrows=2, ncols=5, figsize=(20, 10), gridspec_kw={'hspace': 0.5, 'wspace': 0.1})
-#        fig.suptitle('Vector n.' + str(i), fontsize=16)
 
-#        title_top = 'Most Probable Images'
-#        title_bottom = 'Least Probable Images'
+#    top_images = images[:5]
+#    bot_images = images[5:]
 
-#        axes[0, 2].set_title(title_top, fontsize=14)
-#        axes[1, 2].set_title(title_bottom, fontsize=14)
+#    fig, axes = plt.subplots(nrows=2, ncols=5, figsize=(20, 10), gridspec_kw={'hspace': 0.5, 'wspace': 0.1})
+#    fig.suptitle('Vector n.' + str(vec), fontsize=16)
+    
+    #title_top = ""
+    #title_bottom = ""
+    #axes[0, 2].set_title(title_top, fontsize=14)
+    #axes[1, 2].set_title(title_bottom, fontsize=14)
 
-#        for num, ax in enumerate(axes[0]):
-#            img = min_images[num]
-#            ax.imshow(img)
-#            ax.axis('off')  
-#        for num, ax in enumerate(axes[1]):
-#            img = max_images[num]
-#            ax.imshow(img)
-#            ax.axis('off')  
+#    for num, ax in enumerate(axes[0]):
+#        img = top_images[num]
+#        ax.imshow(img)
+#        ax.axis('off')  
+#    for num, ax in enumerate(axes[1]):
+#        img = bot_images[num]
+#        ax.imshow(img)
+#        ax.axis('off')  
 
-#        plt.tight_layout()
-#        plt.show()
-#        savedir = "Plots/3000/random_init/EC_comm/vec" + str(i) + ".png" if settings.random_init else "Plots/3000/anneal/EC_comm/vec" + str(i) + ".png"
-#        plt.savefig(savedir)
+ #       plt.tight_layout()
+ #       plt.show()
+ #       savedir = "Plots/3000/random_init/EC_comm/vec" + str(vec) + ".png" if settings.random_init else "Plots/3000/anneal/EC_comm/vec" + str(vec) + ".png"
+  #      plt.savefig(savedir)
 
 
 
@@ -129,7 +239,7 @@ def run():
     else:
         num_imgs = 1 if not settings.see_distractor else (num_distractors + 1)
 
-    random_init_dir = "random_init/" if settings.random_init else ""
+    random_init_dir = "random_init/" if settings.random_init else "anneal/"
 
 
     data = get_feature_data(t_features_filename, excluded_ids=excluded_ids)
@@ -149,7 +259,7 @@ def run():
     for u in settings.utilities:
         for a in settings.alphas:
             
-            norm_alpha, norm_ut, norm_compl = normalize([a, u, settings.kl_weight])
+            norm_alpha, norm_ut, norm_compl = normalize_and_adjust([a, u, settings.kl_weight])
             print("==========")
             print(f'Utility: {norm_ut}, Informativeness: {norm_alpha}, Complexity: {norm_compl}')
 
@@ -158,6 +268,7 @@ def run():
             folder_alpha = "alpha"+str(a)+"/"
             print("utility:", u, "alpha:", a)
 
+            
             json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/'
             json_file = json_file_path+"objective_merged.json"
             with open(json_file, 'r') as f:
@@ -170,9 +281,12 @@ def run():
             model.to(settings.device)
             model.eval()
             
-            get_image_per_vec(train_data, model, len(train_data), 10)
-
-
+            model_id = "utility" + str(u) + "_alpha" + str(a) + "/"
+            savedir = "Plots/3000/random_init/EC_comm/"+model_id if settings.random_init else "Plots/3000/anneal/EC_comm/"+model_id
+            if not os.path.exists(savedir):
+                os.makedirs(savedir)
+            get_image_per_vec(train_data, model, len(train_data), savedir, 1)
+           
 
 if __name__ == '__main__':
     feature_len = 512
@@ -189,8 +303,8 @@ if __name__ == '__main__':
     settings.num_protos = 3000 #442
     #settings.alphas = [0, 0.1, 0.5, 1.5, 7, 200]  # informativeness
     #settings.utilities = [0, 0.1, 0.5, 1.5, 7, 200] # utility
-    settings.alphas = [7]
-    settings.utilities = [7]
+    settings.alphas = [200]
+    settings.utilities = [88]
     settings.kl_weight = 1.0 # complexity  
     settings.kl_incr = 0.0
 

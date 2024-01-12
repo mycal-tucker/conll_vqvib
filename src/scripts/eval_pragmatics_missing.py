@@ -1,4 +1,5 @@
 import os
+import ast
 import json
 
 import numpy as np
@@ -256,36 +257,39 @@ def run():
         decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
         model = Team(speaker, listener, decoder)
 
-        for u in settings.utilities:
-            print(u)
-            for a in settings.alphas:
-                print(a)
-                folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-                folder_utility = "utility"+str(u)+"/" 
-                folder_alpha = "alpha"+str(a)+"/"
+        folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
+        models_loc = 'src/saved_models/' + str(settings.num_protos) + "/random_init/"+ folder_ctx + 'missing/seed' + str(seed) + '/'
+
+        json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight1.0/seed' + str(seed) + '/'
+        json_file = json_file_path+"done_weights2.json"
+        with open(json_file, 'r') as f:
+            triplets = json.load(f)
+        done_triplets = [ast.literal_eval(i) for i in list(triplets.values())]
+
+        for t in done_triplets:
+            alpha = t[1]
+            complexity = t[0] 
+            utility = t[2]
+            settings.kl_weight = complexity 
+
+            folder_utility = "utility"+str(utility)+"/"
+            folder_alpha = "alpha"+str(alpha)+"/"
+            folder_compl = "compl"+str(complexity)+"/"
+            
+            convergence_epoch = 4999
+                    
+            # load model
+            model_to_eval_path = models_loc + folder_utility + folder_alpha + folder_compl + str(convergence_epoch)
+            save_eval_path = model_to_eval_path + '/evaluation/'
+            model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
+            model.to(settings.device)
                 
-                try:
-                    # get convergence epoch for that model
-                    json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/'
-                    json_file = json_file_path+"objective_merged.json"
-                    with open(json_file, 'r') as f:
-                        existing_params = json.load(f)
-                    convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(a)]['convergence epoch']
-                    # load model
-                    model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
-                    save_eval_path = model_to_eval_path + '/evaluation/'
-                    model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
-                    model.to(settings.device)
-                
-                    print("Pragmatic task") 
-                    num_cand_to_metrics = {True: {2: []}}
-                    for empty_list in num_cand_to_metrics.get(True).values():
-                        empty_list.extend([PerformanceMetrics()])
-                    eval_model_pragmatics(model, vae_model, c_dim, val_data, viz_data, glove_data, num_cand_to_metrics, save_eval_path, fieldname='topname', calculate_complexity=do_calc_complexity, plot_comms_flag=do_plot_comms)
-                
-                except: # pair not trained
-                    print(u, a, "not found")
-                    pass
+            print("Pragmatic task") 
+            num_cand_to_metrics = {True: {2: []}}
+            for empty_list in num_cand_to_metrics.get(True).values():
+                empty_list.extend([PerformanceMetrics()])
+            eval_model_pragmatics(model, vae_model, c_dim, val_data, viz_data, glove_data, num_cand_to_metrics, save_eval_path, fieldname='topname', calculate_complexity=do_calc_complexity, plot_comms_flag=do_plot_comms)
+         
 
 
 if __name__ == '__main__':
@@ -315,11 +319,6 @@ if __name__ == '__main__':
     do_plot_comms = False
 
     settings.num_protos = 3000 # 442 is the number of topnames in MN 
-    #settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2.2, 3.7, 5, 6, 7, 8, 9, 10.5, 12.8, 21, 33, 88, 140, 200]
-    #settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 2.2, 3.7, 5, 6, 7, 8, 10.5, 12.8, 21, 33, 88, 140, 200]
-    settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
-    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
-    settings.kl_weight = 1.0 # complexity
 
     settings.kl_incr = 0.0
     settings.entropy_weight = 0.0

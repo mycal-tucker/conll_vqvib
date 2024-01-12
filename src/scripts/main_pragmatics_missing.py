@@ -1,3 +1,4 @@
+import ast
 import os
 import json
 
@@ -32,21 +33,6 @@ import time
 from src.data_utils.read_data import get_glove_vectors
 
 
-
-
-# function to normalize the weights and adjust the rounding operation so that they sum to 1
-def normalize_and_adjust(values):
-    total = sum(values)
-    normalized = [round(value / total, 2) for value in values]
-    rounding_error = 1 - sum(normalized)
-    # adjust the largest value(s) by the rounding error
-    if rounding_error != 0:
-        max_value = max(normalized)
-        indexes_of_max = [i for i, v in enumerate(normalized) if v == max_value]
-        error_per_value = rounding_error / len(indexes_of_max)
-        for index in indexes_of_max:
-            normalized[index] += error_per_value
-    return [round(i,3) for i in normalized]
 
 
 def evaluate(model, dataset, batch_size, p_notseedist, vae, glove_data, fieldname, num_dist=None):
@@ -297,7 +283,7 @@ def eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data,
 
 
 
-def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utility, vae, savepath, logs_dir, comm_dim, fieldname, batch_size=1024, burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
+def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, triplets, vae, savepath, logs_dir, comm_dim, fieldname, batch_size=1024, burnin_epochs=500, val_period=200, plot_comms_flag=False, calculate_complexity=False):
     unique_topnames, _ = get_unique_labels(train_data)
 
     criterion = nn.CrossEntropyLoss()
@@ -305,163 +291,75 @@ def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utili
     optimizer = optim.Adam(model.parameters(), lr=0.001)
        
     idx = 0
-    while idx != len(settings.alphas):
-        json_file = logs_dir+"objective" + str(settings.idx_init_ut) + ".json"
+    while idx != len(triplets):
         converged = False
-        alpha = settings.alphas[idx] # we take the new alpha
-        savepath_new = savepath + "alpha"+str(alpha) + '/'
+        alpha = [i[1] for i in triplets][idx] # we take the new alpha
+        complexity = [i[0] for i in triplets][idx]
+        utility = [i[2] for i in triplets][idx]
+        savepath_new = savepath + "utility" + str(utility) + "/" + "alpha" + str(alpha) + '/' + "compl" + str(complexity) + "/"
         epoch = 0
         running_acc = 0
         running_mse = 0
         num_cand_to_metrics = {True: {2: []}}
         for set_distinct in [True]:
             for empty_list in num_cand_to_metrics.get(set_distinct).values():
-                empty_list.extend([PerformanceMetrics(), PerformanceMetrics()])  # Train metrics, validation metrics
+                empty_list.extend([PerformanceMetrics(), PerformanceMetrics()])  # Train metrics, validation metrics        
         
-        # normalize loss weights
-        complexity_weight = settings.kl_weight_unnorm
-        print("unnorm complexity:", complexity_weight)
-        informativeness_weight = alpha # we vary this iterating over settings.alphas
-        print("unnorm informativeness:", informativeness_weight)
+        settings.kl_weight = complexity
+        print("complexity:", settings.kl_weight)
+        informativeness_weight = alpha 
+        print("informativeness:", informativeness_weight)
         utility_weight = utility
-        print("unnorm utility:", utility_weight)
-        
-        norm_weights = normalize_and_adjust([complexity_weight, informativeness_weight, utility_weight])
-        trained_weights_dir = logs_dir + "done_weights.json"
-        try:
-            with open(trained_weights_dir, "r") as file:
-                done = json.load(file)
-                done_triplets = list(done.values())
-        except FileNotFoundError:
-            done_triplets = []
-            done = {}
-        if str(norm_weights) in done_triplets: # this triplet has been trained already
-            idx += 1 # new alpha
-            print("have already:", str(norm_weights))
-                    
-        else: # if we have to train this triplet
-            key = str([complexity_weight, informativeness_weight, utility_weight])
-            done[key] = str(norm_weights)
-            print("new", str(norm_weights))
-            with open(trained_weights_dir, 'w') as f:
-                json.dump(done, f, indent=4)
+        print("utility:", utility_weight)
 
-            print("NORMALIZED")
-            settings.kl_weight = norm_weights[0]
-            print("norm complexity:", settings.kl_weight) # complexity weight (normalized)
-            informativeness_weight = norm_weights[1]
-            print("norm informativeness:", informativeness_weight)
-            utility_weight = norm_weights[2]
-            print("norm utility:", utility_weight)
-        
-            while converged == False:
-                epoch += 1
+        while converged == False:
+            epoch += 1
+
+            speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, p_notseedist, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
+            #start_time = time.time()
+            optimizer.zero_grad()
+            outputs, speaker_loss, info, recons = model(speaker_obs, listener_obs)
             
-                speaker_obs, listener_obs, labels, _ = gen_batch(train_data, batch_size, fieldname, p_notseedist, vae=vae, glove_data=glove_data, see_distractors=settings.see_distractor)
-                start_time = time.time()
-                optimizer.zero_grad()
-                outputs, speaker_loss, info, recons = model(speaker_obs, listener_obs)
-            
-                error = criterion(outputs, labels)
-                utility_loss = utility_weight * error # copy to store later untouched
-                loss = utility_weight * error
+            error = criterion(outputs, labels)
+            utility_loss = utility_weight * error # copy to store later untouched
+            loss = utility_weight * error
 
-                if len(speaker_obs.shape) == 2:
-                    speaker_obs = torch.unsqueeze(speaker_obs, 1)
+            if len(speaker_obs.shape) == 2:
+                speaker_obs = torch.unsqueeze(speaker_obs, 1)
 
-                # we only care about target reconstruction
-                recons_loss = torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2))
-                loss += informativeness_weight * recons_loss
-                loss += speaker_loss
+            # we only care about target reconstruction
+            recons_loss = torch.mean(((speaker_obs[:, 0:1, :] - recons[:, 0:1, :]) ** 2))
+            loss += informativeness_weight * recons_loss
+            loss += speaker_loss
 
-                #print("Speaker loss fraction:\t", speaker_loss.item() / loss.item())
-                #print("Recons loss fraction:\t", settings.alpha * recons_loss.item() / loss.item())
-        
-                loss.backward()
-                optimizer.step()
+            loss.backward()
+            optimizer.step()
 
-                end_time = time.time()
-                # print("Elapsed time", end_time - start_time)
+            #end_time = time.time()
+            # print("Elapsed time", end_time - start_time)
 
-                # Metrics
-                pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
-                num_correct = np.sum(pred_labels == labels.cpu().numpy())
-                num_total = pred_labels.size
-                running_acc = running_acc * 0.95 + 0.05 * num_correct / num_total
-                running_mse = running_mse * 0.95 + 0.05 * recons_loss.item()
+            # Metrics
+            pred_labels = np.argmax(outputs.detach().cpu().numpy(), axis=1)
+            num_correct = np.sum(pred_labels == labels.cpu().numpy())
+            num_total = pred_labels.size
+            running_acc = running_acc * 0.95 + 0.05 * num_correct / num_total
+            running_mse = running_mse * 0.95 + 0.05 * recons_loss.item()
            
-                if epoch % val_period == val_period - 1: # if it's a validation epoch
-                    
-                    if not os.path.exists(json_file): # gross, but means: if we are training the first model of its annealing group
-                        
-                        eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics, savepath_new, epoch, fieldname, p_notseedist, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
-                        if epoch == n_epochs-1: # if we are done with the training
-                            converged = True
-                            print("CONVERGED!!!")
-                            # save model info
-                            if os.path.exists(json_file):
-                                with open(json_file, 'r') as f:
-                                    existing_params = json.load(f)
-                            else:
-                                existing_params = {}
-
-                            dic = {}
-                            dic["inf_weight"+str(alpha)] = {"objective": loss.item(),
-                                                #"unw objective": unweighted_loss.item(),
-                                                "speaker loss": speaker_loss.item(), # weighted already
-                                                "recons loss": informativeness_weight * recons_loss.item(),
-                                                "unw recons loss": recons_loss.item(),
-                                                "utility loss": utility_loss.item(), # weighted already
-                                                "unw utility loss": error.item(),
-                                                "convergence epoch": epoch} 
-
-                            if "utility"+str(utility) in existing_params.keys():
-                                existing_params["utility"+str(utility)].update(dic)
-                            else:
-                                existing_params["utility"+str(utility)] = dic
-
-                            with open(json_file, 'w') as f:
-                                json.dump(existing_params, f, indent=4)
-                        
-                            # go to the first annealed model
-                            idx += 1 # new alpha
-                            break
-
-                        else: # not done with the training
-                            continue
+            if epoch % val_period == val_period - 1: # if it's a validation epoch
+                eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics, savepath_new, epoch, fieldname, p_notseedist, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
                 
-                    else: # if it's not the first model, we check convergence                
-                        stored_objectives = []
-                        if epoch % val_period == val_period - 1:
-                            stored_objectives.append(loss.item())
-                            eval_model(model, vae, comm_dim, train_data, val_data, viz_data, glove_data, num_cand_to_metrics, savepath_new, epoch, fieldname, p_notseedist, calculate_complexity=calculate_complexity and epoch == num_epochs - 1, plot_comms_flag=plot_comms_flag)
+            if epoch == n_epochs-1: # if we are done with the training
+                converged = True
+                # save model info
+                json_file = logs_dir+"objective_missing" + str(idx_job) + ".json"
+                if os.path.exists(json_file):
+                    with open(json_file, 'r') as f:
+                        existing_params = json.load(f)
+                else:
+                    existing_params = {}
 
-                    
-                        if epoch != n_epochs-1:
-                    
-                            # check convergence
-                            metrics_path = savepath_new + str(epoch) + '/val_True_2_metrics'
-                            if os.path.exists(metrics_path):
-                                acc_history = PerformanceMetrics.from_file(metrics_path).comm_accs
-                                recent_acc = acc_history[-look_back:]
-                                rec_history = PerformanceMetrics.from_file(metrics_path).recons
-                                recent_rec = rec_history[-look_back:]
-                                recent_objectives = stored_objectives[-look_back:]
-
-                                if len(recent_acc) == look_back and np.var(recent_acc) < epsilon_convergence and np.var(recent_rec) < epsilon_convergence and np.var(recent_objectives) < epsilon_convergence:
-                                    converged = True
-                                    print("CONVERGED!!!")
-                    
-                                    # save model info
-                                    json_file = logs_dir+"objective" + str(settings.idx_init_ut) +".json"            
-                                    if os.path.exists(json_file):
-                                        with open(json_file, 'r') as f:
-                                            existing_params = json.load(f)
-                                    else:
-                                        existing_params = {}
-            
-                                    dic = {}
-                                    dic["inf_weight"+str(alpha)] = {"objective": loss.item(),
+                dic = {}
+                dic["inf_weight"+str(alpha)] = {"objective": loss.item(),
                                                 #"unw objective": unweighted_loss.item(),
                                                 "speaker loss": speaker_loss.item(), # weighted already
                                                 "recons loss": informativeness_weight * recons_loss.item(),
@@ -470,58 +368,19 @@ def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utili
                                                 "unw utility loss": error.item(),
                                                 "convergence epoch": epoch} 
 
-                                    if "utility"+str(utility) in existing_params.keys():
-                                        existing_params["utility"+str(utility)].update(dic)
-                                    else:
-                                        existing_params["utility"+str(utility)] = dic
+                if "utility"+str(utility) in existing_params.keys():
+                    existing_params["utility"+str(utility)].update(dic)
+                else:
+                    existing_params["utility"+str(utility)] = dic
 
-                                    with open(json_file, 'w') as f:
-                                        json.dump(existing_params, f, indent=4)
-                    
-                                    # go to following model
-                                    idx += 1 # new alpha
-                                    break
+                with open(json_file, 'w') as f:
+                    json.dump(existing_params, f, indent=4)
+                        
+                idx += 1 # new triplet
+                break
 
-                                else: # not converged
-                                    continue
-                                 
-                        elif epoch == n_epochs-1: # we stop training
-                            converged = True
-                            print("NOT really CONVERGED, just stopped")
-                    
-                            # save model info
-                            json_file = logs_dir+"objective" + str(settings.idx_init_ut) +".json"
-                            if os.path.exists(json_file):
-                                with open(json_file, 'r') as f:
-                                    existing_params = json.load(f)
-                            else:
-                                existing_params = {}
-
-                            dic = {}
-                            dic["inf_weight"+str(alpha)] = {"objective": loss.item(),
-                                                #"unw objective": unweighted_loss.item(),
-                                                "speaker loss": speaker_loss.item(), # weighted already
-                                                "recons loss": informativeness_weight * recons_loss.item(),
-                                                "unw recons loss": recons_loss.item(),
-                                                "utility loss": utility_loss.item(), # weighted already
-                                                "unw utility loss": error.item(),
-                                                "convergence epoch": epoch}
-
-                            if "utility"+str(utility) in existing_params.keys():
-                                existing_params["utility"+str(utility)].update(dic)
-                            else:
-                                existing_params["utility"+str(utility)] = dic
-
-                            with open(json_file, 'w') as f:
-                                json.dump(existing_params, f, indent=4)
-
-                            # go to following model
-                            idx += 1 # new alpha
-                            break
-
-                else: # not a validation epoch
-                    continue
-
+            else: # not validation epoch and not done with the training
+                continue 
 
 
 def run():
@@ -542,20 +401,24 @@ def run():
     #print("dropout:", settings.dropout)
     print("context:", settings.with_ctx_representation)
 
-    starting_utility = settings.utilities[settings.idx_init_ut]
     speaker = VQ(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, variational=variational, num_imgs=num_imgs)
-    #speaker = VQVIB2(feature_len, c_dim, num_layers=3, num_protos=settings.num_protos, num_simultaneous_tokens=1, num_images=num_imgs)
-    #listener = ListenerPragmatics(feature_len + num_imgs * feature_len, num_distractors+1, num_imgs=num_imgs)
     listener = ListenerPragmaticsCosines(feature_len)
     decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
     model = Team(speaker, listener, decoder)
     model.to(settings.device)
 
     folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-    folder_utility_type = "utility"+str(starting_utility)+"/"
-    save_loc = 'src/saved_models/' + str(settings.num_protos) + "/" + folder_ctx + 'kl_weight' + str(settings.kl_weight_unnorm) + '/seed' + str(seed) + '/' + folder_utility_type
-    json_file_path = "src/saved_models/" + str(settings.num_protos) + "/" + folder_ctx + 'kl_weight' + str(settings.kl_weight_unnorm) + '/seed' + str(seed) + '/'
-    train(model, train_data, val_data, viz_data, glove_data=glove_data, utility=starting_utility, p_notseedist=0, vae=vae_model, savepath=save_loc, logs_dir=json_file_path, comm_dim=c_dim, fieldname='topname', batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
+    save_loc = 'src/saved_models/' + str(settings.num_protos) + "/random_init/"+ folder_ctx + 'missing/seed' + str(seed) + '/' 
+    json_file_path = "src/saved_models/" + str(settings.num_protos) + "/random_init/" + folder_ctx + 'missing/seed' + str(seed) + '/'
+        
+    weights_to_train = "src/saved_models/" + str(settings.num_protos) + "/random_init/" + folder_ctx + 'kl_weight1.0/seed' + str(seed) + '/done_weights3.json'
+    with open(weights_to_train) as f:
+        to_train = json.load(f)
+    to_train = [ast.literal_eval(i) for i in to_train.values()][40:50]
+
+    train(model, train_data, val_data, viz_data, glove_data=glove_data, triplets=to_train, p_notseedist=0, vae=vae_model, savepath=save_loc, logs_dir=json_file_path, comm_dim=c_dim, fieldname='topname', batch_size=b_size, burnin_epochs=num_burnin, val_period=v_period, plot_comms_flag=do_plot_comms, calculate_complexity=do_calc_complexity)
+
+
 
 
 if __name__ == '__main__':
@@ -571,7 +434,7 @@ if __name__ == '__main__':
     
     settings.eval_someRE = False
     
-    num_distractors = 1
+    num_distractors = 4
     settings.num_distractors = num_distractors
     v_period = 200  # How often to test on the validation set and calculate various info metrics.
     num_burnin = 500
@@ -582,16 +445,12 @@ if __name__ == '__main__':
     # Measuring complexity takes a lot of time. For debugging other features, set to false.
     do_calc_complexity = False
     do_plot_comms = False
-
-    settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
-    settings.alphas.reverse()
-    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
-    settings.kl_weight_unnorm = 1.0 # complexity
-    settings.idx_init_ut = 20 # we train the first model with a chosen utility. Then, we iterate over the decreasing alphas.
+    
+    idx_job = 1
     look_back = 10
     epsilon_convergence = 0.0001
     n_epochs = 5000
-
+   
     settings.kl_incr = 0.0 # complexity increase
     settings.entropy_weight = 0.0
     settings.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -611,9 +470,9 @@ if __name__ == '__main__':
     manynames = load_cleaned_results(filename="src/data/manynames.tsv")
     someRE = pd.read_csv("src/data/someRE.csv", sep = ";")
     merged_tmp = pd.merge(manynames, someRE, on=['link_vg'])
-    excluded_ids = [str(i) for i in merged_tmp['vg_image_id']] 
-    print("excluded ids:", len(excluded_ids))
-
+    excluded_ids = [str(i) for i in merged_tmp['vg_image_id']]
+    print(len(excluded_ids))
+            
     vae_model = VAE(512, 32)
     vae_model.load_state_dict(torch.load('src/saved_models/vae0.001.pt'))
     vae_model.to(settings.device)
@@ -621,7 +480,7 @@ if __name__ == '__main__':
     settings.sample_first = True
     speaker_type = 'vq'  # Options are 'vq', 'cont', or 'onehot'
     
-    seed = 0 
+    seed = 0 # 0,1,2
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

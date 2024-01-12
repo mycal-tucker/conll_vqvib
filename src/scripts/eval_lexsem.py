@@ -114,7 +114,7 @@ def eval_model_lexsem(model, vae, comm_dim, data, viz_data, glove_data, num_cand
     if not os.path.exists(save_eval_path + 'lexsem/'):
         os.makedirs(save_eval_path + 'lexsem/')
     if calculate_complexity:
-        test_complexity = get_cond_info(model, data, targ_dim=comm_dim, p_notseedist=1, glove_data=glove_data, num_epochs=200)
+        #test_complexity = get_cond_info(model, data, targ_dim=comm_dim, p_notseedist=1, glove_data=glove_data, num_epochs=200)
         print("Test complexity", test_complexity)
     else:
         test_complexity = None
@@ -341,7 +341,7 @@ def run():
                     #    consistency_scores.append(consistency_score)
                     #print(consistency_scores)
                     #print("average:", sum(consistency_scores) / len(consistency_scores))
-                except: # not trained
+                except: # pair not trained
                     print(u, a, "not found")
                     pass
 
@@ -376,8 +376,8 @@ if __name__ == '__main__':
     settings.num_protos = 3000 # 442 is the number of topnames in MN 
     #settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2.2, 3.7, 5, 6, 7, 8, 9, 10.5, 12.8, 21, 33, 88, 140, 200]
     #settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 3.7, 5, 6, 7, 8, 10.5, 12.8, 21, 33, 88, 140, 200]
-    settings.alphas = [0, 0.1, 0.2, 0.4, 0.7, 0.9, 1, 1.2, 1.5, 2.2, 3, 3.7, 5, 7, 9, 21, 33, 88, 140, 200]
-    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2.2, 3, 3.7, 5, 7, 9, 12.8, 21, 33, 88, 140, 200, 1.1, 1.3, 1.7, 1.9]
+    settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
+    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
     settings.kl_weight = 1.0 # complexity
     
     # to get alignment

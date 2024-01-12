@@ -160,61 +160,6 @@ def get_ec_words(dataset, team, batch_size, num_samples, utility, alpha, json_pa
 
 
 
-def get_ec_words_threshold(dataset, team, num_examples, num_samples, threshold, utility, alpha, json_path):
-    
-    json_file = json_path
-    if os.path.exists(json_file):
-        with open(json_file, 'r') as f:
-            dic = json.load(f)
-    else:
-        dic = {}
-
-    # PRAGMATICS
-    comms = []
-    speaker_obs, _, _, _ = gen_batch(dataset, num_examples, fieldname, p_notseedist=0, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors)
-
-    #prototypes = team.speaker.vq_layer.prototypes.detach().cpu()
-
-    count_trials = []
-    for i in range(num_samples):
-        likelihood, _ = team.speaker.get_token_dist(speaker_obs)
-        count_trials.append(int((likelihood > threshold).sum()))    
-        
-    pragmatics = {"threshold": threshold,
-                  "word counts": count_trials,
-                  "average word count": sum(count_trials)/len(count_trials)}
-
-    metrics = {"pragmatics": pragmatics}
-    
-    # LEXSEM
-    comms = []
-    speaker_obs, _, _, _ = gen_batch(dataset, num_examples, fieldname, p_notseedist=1, vae=vae_model, see_distractors=settings.see_distractor, glove_data=glove_data, num_dist=num_distractors)
-
-    count_trials = []
-    for i in range(num_samples):
-        likelihood, _ = team.speaker.get_token_dist(speaker_obs)
-        count_trials.append(int((likelihood > threshold).sum()))  
-
-    lexsem = {"threshold": threshold,
-                  "word counts": count_trials,
-                  "average word count": sum(count_trials)/len(count_trials)}
-
-    metrics["lexsem"] = lexsem
-
-    
-    # SAVE STUFF
-    dic_tmp = {"inf_weight"+str(alpha): metrics}
-
-    if "utility"+str(utility) in dic.keys():
-        dic["utility"+str(utility)].update(dic_tmp)
-    else:
-        dic["utility"+str(utility)] = dic_tmp
-
-    with open(json_file, 'w') as f:
-        json.dump(dic, f, indent=4)
-
-
-
 
 def run():
     if settings.see_distractors_pragmatics:
@@ -251,43 +196,39 @@ def run():
     decoder = Decoder(c_dim, feature_len, num_layers=3, num_imgs=num_imgs)
     model = Team(speaker, listener, decoder)
 
-    for u in settings.utilities:
-        for a in settings.alphas:
+    folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
+    models_loc = 'src/saved_models/' + str(settings.num_protos) + "/random_init/"+ folder_ctx + 'missing/seed' + str(seed) + '/'
+
+    json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight1.0/seed' + str(seed) + '/'
+    json_file = json_file_path+"done_weights2.json"
+    with open(json_file, 'r') as f:
+        triplets = json.load(f)
+    done_triplets = [ast.literal_eval(i) for i in list(triplets.values())][80:]
+
+    for t in done_triplets:
+        alpha = t[1]
+        complexity = t[0]
+        utility = t[2]
+        settings.kl_weight = complexity
+
+        folder_utility = "utility"+str(utility)+"/"
+        folder_alpha = "alpha"+str(alpha)+"/"
+        folder_compl = "compl"+str(complexity)+"/"
+
+        convergence_epoch = 4999
+        
+        # load model
+        model_to_eval_path = models_loc + folder_utility + folder_alpha + folder_compl + str(convergence_epoch)
+        model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
+        model.to(settings.device)
+
+        json_file_ECcount = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight1.0/seed' + str(seed) + '/word_counts_missing' + str(settings.job_num) + '.json'
+#        json_file_ECdistr = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/word_counts_thresh_' + str(settings.threshold) + '_' + str(settings.job_num) + '.json'
+        
+        get_ec_words(val_data, model, len(val_data), 10, utility, alpha, json_file_ECcount)
+
+
             
-            norm_alpha, norm_ut, norm_compl = normalize_and_adjust([a, u, settings.kl_weight])
-            print("==========")
-            print(f'Utility: {norm_ut}, Informativeness: {norm_alpha}, Complexity: {norm_compl}')
-
-            folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
-            folder_utility = "utility"+str(u)+"/"
-            folder_alpha = "alpha"+str(a)+"/"
-            print("alpha:", a)
-
-            try:
-                json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/'
-                json_file = json_file_path+"objective_merged.json"
-                with open(json_file, 'r') as f:
-                    existing_params = json.load(f)
-                convergence_epoch = existing_params["utility"+str(u)]["inf_weight"+str(a)]['convergence epoch']
-
-                # load model
-                model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/' + folder_utility + folder_alpha + str(convergence_epoch)
-                model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
-                model.to(settings.device)
-                model.eval()
-
-                json_file_ECcount = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/word_counts' + str(settings.job_num) + '.json'
-                json_file_ECdistr = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(seed) + '/word_counts_thresh_' + str(settings.threshold) + '_' + str(settings.job_num) + '.json'
-                
-                get_ec_words(train_data, model, len(train_data), 10, u, a, json_file_ECcount)
-
-                #data_to_check = someRE_data if settings.eval_someRE else train_data
-                #get_ec_words_threshold(data_to_check, model, len(data_to_check), 10, settings.threshold, u, a, json_file_ECdistr)
-            
-            except:
-                print(u, a, "not trained")
-
-
 
 if __name__ == '__main__':
     feature_len = 512
@@ -303,13 +244,8 @@ if __name__ == '__main__':
 
     settings.num_protos = 3000 #442
     settings.threshold = 0.001
-    settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
-    #settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
-    #settings.utilities = [0, 0.1, 0.2, 0.3, 0.4]
-    #settings.utilities = [0.5, 0.7, 0.9, 1, 1.5, 2]
-    #settings.utilities = [3, 4, 5, 7, 10, 20]
-    settings.utilities = [40, 88, 140, 200]
-    settings.job_num = 3
+    settings.job_num = 4
+
     settings.kl_weight = 1.0 # complexity  
     settings.kl_incr = 0.0
 

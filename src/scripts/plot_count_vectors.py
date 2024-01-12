@@ -11,10 +11,6 @@ from matplotlib import pyplot as plt
 import src.settings as settings
 
 
-def normalize(values):
-    total = sum(values)
-    return tuple(round(value / total, 2) for value in values)
-
 
 def normalize_and_adjust(values):
     total = sum(values)
@@ -31,13 +27,11 @@ def normalize_and_adjust(values):
 
 
 
-def simplex(models_path, eval_type, savepath, scale=1):
+def simplex(models_path, metric, eval_type, savepath, scale=1):
 
-    metric = 'word count'
     plot_data = []
     for utility_folder in os.listdir(models_path):
-        #if "objective" in utility_folder or "old" in utility_folder or utility_folder == "utility2.2" or utility_folder == "utility9":
-        if "objective" in utility_folder or "word_counts" in utility_folder or "old" in utility_folder:
+        if "objective" in utility_folder or "word_counts" in utility_folder or "done_weights" in utility_folder:
             continue
         print(utility_folder)
         utility_value = float(utility_folder.replace("utility", ""))
@@ -55,9 +49,13 @@ def simplex(models_path, eval_type, savepath, scale=1):
                 try:
                     json_file_path = "src/saved_models/" + str(settings.num_protos) + '/' + random_init_dir + settings.folder_ctx + 'kl_weight' + str(settings.kl_weight) + '/seed' + str(settings.seed) + '/'
                     json_file = json_file_path+"word_counts" + str(num) + ".json"
+                    #json_file = json_file_path + "word_counts_thresh_0.001_" + str(num) + ".json"
                     with open(json_file, 'r') as f:
                         existing_params = json.load(f) 
-                    count += existing_params["utility"+str(utility_value_folder)]["inf_weight"+str(alpha_value_folder)][eval_type]['average word count']
+                    if metric == "word count":
+                        count += existing_params["utility"+str(utility_value_folder)]["inf_weight"+str(alpha_value_folder)][eval_type]['average word count']
+                    else:
+                        count += existing_params["utility"+str(utility_value_folder)]["inf_weight"+str(alpha_value_folder)][eval_type]['average entropy']
                 except:
                     pass
                 if count != 0:
@@ -69,6 +67,8 @@ def simplex(models_path, eval_type, savepath, scale=1):
 
     df = pd.DataFrame(plot_data, columns=["Utility", "Alpha", "Count"])
     df['Complexity'] = 1
+    
+    df.to_csv(savepath + "random_init_" + eval_type + "_" + metric + ".csv")
 
     # normalize weights
     normalized_points = []
@@ -99,8 +99,10 @@ def simplex(models_path, eval_type, savepath, scale=1):
     figure, tax = ternary.figure(scale=scale)
     tax.boundary(linewidth=1.0)
     tax.gridlines(multiple=0.1, color="blue")
-    tax.set_title("Word count " + eval_type, fontsize=18, pad=18)
-
+    if metric == "word count":
+        tax.set_title("Word count " + eval_type, fontsize=18, pad=18)
+    else:
+        tax.set_title("Entropy " + eval_type, fontsize=18, pad=18)
     fontsize = 15
     tax.left_axis_label("Utility", fontsize=fontsize, offset=0.16, color='orange')
     tax.right_axis_label("Informativeness", fontsize=fontsize, offset=0.16, color='green')
@@ -115,10 +117,14 @@ def simplex(models_path, eval_type, savepath, scale=1):
     # Create the colorbar
     fig = tax.get_axes().figure
     cbar = fig.colorbar(scalar_map, ax=tax.get_axes(), orientation='vertical', shrink=0.6)
-    lab = 'word count'
+    lab = 'word count' if metric == "word count" else "entropy"
     cbar.set_label(lab, fontsize=12)
 
-    plt.savefig(savepath + "simplex_word_count_" + eval_type + ".png", bbox_inches='tight')
+    if metric == "word count":
+        plt.savefig(savepath + "simplex_word_count_" + eval_type + ".png", bbox_inches='tight')
+    else:
+        plt.savefig(savepath + "simplex_word_entropy_" + eval_type + ".png", bbox_inches='tight')
+    #plt.savefig(savepath + "simplex_word_count_thresh0.001_" + eval_type + ".png", bbox_inches='tight')
     tax.show()
 
 
@@ -156,20 +162,19 @@ def run():
     utility = settings.utilities
     basedir = "src/saved_models/"+ str(settings.num_protos) + '/' + random_init_dir + settings.folder_ctx + "kl_weight" f"{settings.kl_weight}" + "/seed" + str(settings.seed) + '/'
     save_path = "Plots/" + str(settings.num_protos) + "/random_init/simplex/" if settings.random_init else "Plots/" + str(settings.num_protos) + "/anneal/simplex/"
-    #simplex(basedir, "pragmatics", save_path, scale=1)
-    simplex(basedir, "lexsem", save_path, scale=1)
-
+    simplex(basedir, "word count", "pragmatics", save_path, scale=1)
+    simplex(basedir, "word count", "lexsem", save_path, scale=1)
+    simplex(basedir, "entropy", "pragmatics", save_path, scale=1)
+    simplex(basedir, "entropy", "lexsem", save_path, scale=1)
 
 
 
 if __name__ == '__main__':
-    #settings.alphas =  [0,  0.5, 1.5, 7]  # informativeness
-    #settings.utilities = [0,  0.5, 1.5, 7] # utility
-    settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 3.7, 5, 6, 7, 8, 10.5, 12.8, 21, 33, 88, 140, 200]
-    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 3.7, 5, 6, 7, 8, 10.5, 12.8, 21, 33, 88, 140, 200] 
+    settings.alphas = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
+    settings.utilities = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1, 1.5, 2, 3, 4, 5, 7, 10, 20, 40, 88, 140, 200]
     settings.complexities = 1.0
     settings.with_ctx_representation = False
-    settings.random_init = False
+    settings.random_init = True
     settings.kl_weight = 1.0
     settings.folder_ctx = "with_ctx/" if settings.with_ctx_representation else "without_ctx/"
     settings.seed = 0

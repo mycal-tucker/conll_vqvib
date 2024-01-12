@@ -391,7 +391,7 @@ def train(model, train_data, val_data, viz_data, glove_data, p_notseedist, utili
                 if epoch == n_epochs-1: # if we are done with the training
                     converged = True
                     # save model info
-                    json_file = objective_json+"objective" + str(idx_job) + ".json"
+                    json_file = logs_dir+"objective" + str(idx_job) + ".json"
                     if os.path.exists(json_file):
                         with open(json_file, 'r') as f:
                             existing_params = json.load(f)
@@ -485,11 +485,11 @@ if __name__ == '__main__':
     settings.alphas.reverse()
     #settings.utilities = [0, 0.1, 0.2, 0.3]
     #settings.utilities = [0.4, 0.5, 0.7, 0.9]
-    settings.utilities = [1, 1.5, 2, 3]
+    #settings.utilities = [1, 1.5, 2, 3]
     #settings.utilities = [4, 5, 7, 10]
-    #settings.utilities = [20, 40, 88, 140, 200]
+    settings.utilities = [20, 40, 88, 140, 200]
     
-    idx_job = 2
+    idx_job = 4
     settings.kl_weight_unnorm = 1.0 # complexity
     look_back = 10
     epsilon_convergence = 0.0001
