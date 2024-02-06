@@ -152,8 +152,9 @@ class VQ(nn.Module):
             reshaped = torch.reshape(x, (-1, self.proto_latent_dim))
             mu = self.fc_mu(reshaped)
             logvar = self.fc_var(reshaped)
-            # sample = reparameterize(mu, logvar) if not self.eval_mode else mu
-            sample = reparameterize(mu, logvar)
+            # CHANGED THIS TO COMPUTE NAMING METRICS DETERMINISTICALLY
+            sample = reparameterize(mu, logvar) if not self.eval_mode else mu
+            #sample = reparameterize(mu, logvar)
             # Quantize the vectors
             output, proto_loss = self.vq_layer(sample, mu, logvar)
             # Regroup the tokens into messages, now with possibly multiple tokens.
@@ -185,7 +186,7 @@ class VQ(nn.Module):
                 x = F.relu(x)
             if self.variational:
                 logvar = self.fc_var(x)
-                mu = self.fc_mu(x)
+                mu = self.fc_mu(x) 
                 samples = reparameterize(mu, logvar)
             else:
                 samples = self.fc_mu(x)
@@ -199,7 +200,8 @@ class VQ(nn.Module):
             encoding_one_hot.scatter_(1, closest_protos, 1)
             likelihoods = np.mean(encoding_one_hot.detach().cpu().numpy(), axis=0)
             
-        return likelihoods, dists_to_protos
+        return likelihoods 
+
 
     def snap_comms(self, x):
         reshaped = torch.reshape(x, (-1, self.proto_latent_dim))

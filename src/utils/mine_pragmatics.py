@@ -97,6 +97,7 @@ def get_info_lexsem(model, dataset, targ_dim, glove_data=None, num_epochs=200, b
     for epoch in range(num_epochs):
         speaker_obs, _, _, _ = gen_batch(dataset, batch_size, p_notseedist=1, fieldname='topname', glove_data=glove_data)
         with torch.no_grad():
+
             targ_var, _, _ = model.speaker(speaker_obs)  # Communication
 
         # Shuffle the target variable so we can get a marginal of sorts.
