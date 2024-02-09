@@ -2,13 +2,18 @@ import os
 import ast
 import json
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from mpl_toolkits.mplot3d import Axes3D
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn import manifold
 from scipy import stats
 import random
 
@@ -36,30 +41,46 @@ from src.data_utils.read_data import get_glove_vectors
 
 
 def p_W_I(data, model, vae=None, glove_data=None):
+    
+    # find synonym prototypes
+    prototypes = model.speaker.vq_layer.prototypes.detach().cpu()
+    proto_synonyms = find_synonyms(prototypes, 0.1)
+    print("prototypes' clusters found:", len(proto_synonyms))
 
+    # initialize dictionary to store human names probabilities
     human_names = []
     for i in list(data['responses']):
         for j in i.keys():
             human_names.append(j)
-    human_names = set(human_names)
-
+    human_names = list(set(human_names))
     human_probs = {key: [] for key in human_names}
+    ids_to_names = dict(enumerate(human_names))
+    names_to_ids = {v:k for k,v in ids_to_names.items()}
+    
+    # initialize dictionary for model names
     model_probs = {key: [] for key in range(settings.num_protos)}
+    vg_ids = {}
+    
+    counter = 0
 
     for targ_idx in list(data.index.values):
 
         speaker_obs, _, _, _ = gen_batch(data, 1, "topname", p_notseedist=1, glove_data=glove_data, vae=vae, preset_targ_idx=targ_idx)
-
+        
         if speaker_obs != None: # i.e. we have the glove embeds
+            
             responses = data['responses'][targ_idx]
             total = sum(list(responses.values()))
             normalized_responses = {key: value/total for key, value in responses.items()}
-
             for k,v in human_probs.items():
                 if k in normalized_responses.keys():
-                    human_probs[k].append(v)
+                    human_probs[k].append(normalized_responses[k])
                 else:
                     human_probs[k].append(0.0)
+
+            id_ = data['vg_image_id'][targ_idx]
+            vg_ids[counter] = id_
+            counter += 1
 
             # we repeat the input to get a sense of the topname
             speaker_obs = speaker_obs.repeat(100, 1, 1)
@@ -69,48 +90,72 @@ def p_W_I(data, model, vae=None, glove_data=None):
                 for idx in range(len(likelihood)):
                     model_probs[idx].append(likelihood[idx])
 
-
-                # we substitute the prototype with the cluster representative (if no synonym was found, we use the prototype itself)
-                #for k,v in proto_synonyms.items():
-                #    if index_of_one in v:
-                #        model_names.append(k)
-
         else:
             pass
     
-    M = len(model_probs[0])
-    W = settings.num_protos
-    model_matrix = np.empty((M, W))
-    for i in range(W):
+    # MODEL MATRIX
+    
+    model_matrix = np.empty([len(model_probs[0]), settings.num_protos])
+    
+    for i in range(settings.num_protos):
         model_matrix[:, i] = model_probs[i]
     
-    return M, W, model_matrix, human_probs
+    # remove synomym columns
+    for key, columns in proto_synonyms.items():
+        model_matrix[:, key] = np.sum(model_matrix[:, columns], axis=1)
+    
+    columns_to_remove = set()
+    for key, columns in proto_synonyms.items():
+        columns_to_remove.update([c for c in columns if c != key])
+
+    columns_to_keep = [c for c in range(model_matrix.shape[1]) if c not in columns_to_remove]
+    model_matrix = model_matrix[:, columns_to_keep]
+    
+    # identify columns that are not all zeros
+    non_zero_columns = np.any(model_matrix != 0, axis=0)
+    model_matrix = model_matrix[:, non_zero_columns]
+
+    # make it a real matrix
+    model_matrix = np.matrix(model_matrix)
+
+    M = model_matrix.shape[0]
+    W = model_matrix.shape[1]
+    
+    # HUMAN MATRIX
+    
+    human_matrix = np.empty([len(list(human_probs.values())[0]), len(human_names)])
+    for i in range(len(human_names)):
+        human_matrix[:, i] = human_probs[ids_to_names[i]]
+    
+    # identify columns that are not all zeros
+    #non_zero_columns = np.any(human_matrix != 0, axis=0)
+    #human_matrix = human_matrix[:, non_zero_columns]
+
+    human_matrix = np.matrix(human_matrix)
+    
+    M_human = human_matrix.shape[0]
+    W_human = human_matrix.shape[1]
+
+    return M, W, model_matrix, M_human, W_human, human_matrix, ids_to_names, vg_ids
 
 
 
-def p_W(M, W, model, model_matrix):
+def p_W(M, W, model, p_W_I):
     
     p_image = 1/M
-
-    # remove prototypes that are synonyms to avoid noise
-    prototypes = model.speaker.vq_layer.prototypes.detach().cpu()
-    proto_synonyms = find_synonyms(prototypes, 0.1)
-    print("prototypes' clusters found:", len(proto_synonyms))
-    
+   
     p_words = []
     for i in range(W):
-        p_words.append(p_image * sum(model_matrix[:, i]))
+        p_words.append(p_image * sum(p_W_I[:, i]))
     p_words = np.array(p_words).reshape(1, W)
 
     return p_words, p_image
 
 
-def p_I_W(model_matrix, p_word, p_image):
-    
-    PRECISION = 1e-9
-    p_word = p_word + PRECISION
-    
-    return (model_matrix * p_image) / p_word 
+
+def p_I_W(p_W_I, p_word, p_image):
+     
+    return (p_W_I * p_image) / p_word 
 
 
 
@@ -152,31 +197,177 @@ def run():
     folder_utility = "utility" + str(utility) + "/"
     folder_alpha = "alpha" + str(informativeness) + "/"
     folder_complexity = "compl" + str(complexity) + "/"
-
+    
+    print(random_init_dir)
     model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(complexity) + '/' + 'seed0/' + folder_utility + folder_alpha + "4999/"
     model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
     model.to(settings.device)
     model.eval()
 
-    M, W, p_word_image, human_probs = p_W_I(data, model, vae=vae, glove_data=glove_data)
-    print("p_W_I:", p_word_image, p_word_image.shape)
-    p_word, p_image = p_W(M, W, model, p_word_image)
-    print("p_word:", p_word, p_word.shape)
-    p_image_word = p_I_W(p_word_image, p_word, p_image)
-    print("p_I_W:", p_image_word, p_image_word.shape)
+    M, W, model_p_word_image, M_human, W_human, human_p_word_image, ids_to_names, vg_ids = p_W_I(data, model, vae=vae, glove_data=glove_data)
+    print("p_W_I:", model_p_word_image.shape)
+    #print(np.sum(model_p_word_image, axis=1))
+    print("p_W_I:", human_p_word_image.shape)
+    #print(np.sum(human_p_word_image, axis=1))
+
+    #model_p_word, model_p_image = p_W(M, W, model, model_p_word_image)
+    #print("model p_word:", model_p_word.shape)
+    human_p_word, human_p_image = p_W(M_human, W_human, model, human_p_word_image)
+    print("human p_word:", human_p_word.shape)
+    print(np.sum(human_p_word, axis=1))
+
+    most_prob_human_words = np.argsort(human_p_word.squeeze())[-10:]
+    print([ids_to_names[i] for i in most_prob_human_words])
+
+    human_p_image_word = p_I_W(human_p_word_image, human_p_word, human_p_image)
+    print("p_I_W:", human_p_image_word.shape)
+    print(np.sum(human_p_image_word, axis=0))
 
 
-    column_sums = np.sum(p_image_word, axis=0)
-    print(column_sums)
+    most_prob_images_per_word_humans = []
+    for i in most_prob_human_words:
+        most_prob_images_per_word_humans.append(np.argsort(human_p_image_word[:, i].squeeze()).A1[-100:].tolist())
+
+    vectors, human_classes, EC_classes = [], [], []
+    for n, ids in zip(most_prob_human_words, most_prob_images_per_word_humans):
+        for j in ids:
+            vg_image_id = vg_ids[j]
+            vectors.append(data.loc[data['vg_image_id'] == vg_image_id, 't_features'].tolist()[0])
+            human_classes.append(ids_to_names[n])
+            most_prob_EC = np.argmax(model_p_word_image[j, :].squeeze()).tolist()        
+            EC_classes.append(most_prob_EC)
 
 
-    most_prob_words = np.argsort(p_word)[-10:]
-    most_prob_images_per_word = []
-    for i in most_prob_words:
-        most_prob_images_per_word.append(np.argsort(p_image_word[:, i])[-5:])
+    #p_image_word = p_I_W(p_word_image, p_word, p_image)
+    #print("p_I_W:", p_image_word.shape)
+    #print(np.sum(p_image_word, axis=0))
+    #most_prob_words = np.argsort(p_word.squeeze())[-10:]
+    #most_prob_images_per_word = []
+    #for i in most_prob_words:
+    #    most_prob_images_per_word.append(np.argsort(p_image_word[:, i].squeeze()).A1[-100:].tolist())
+    
+        
+    #vectors, human_classes, EC_classes = [], [], []
+    #for num, i in enumerate(most_prob_images_per_word):
+    #    print(i)
+    #    for j in i:
+    #        vg_image_id = vg_ids[j]
+    #        vectors.append(data.loc[data['vg_image_id'] == vg_image_id, 't_features'].tolist()[0])
+    #        n = data.loc[data['vg_image_id'] == vg_image_id, 'topname'].tolist()[0]
+    #        human_classes.append(n)
+    #        EC_classes.append(num)
+    #        print(n)
+    
 
-    print(most_prob_words)
-    print(most_prob_images_per_word)
+    unique_labels = list(set(human_classes))
+    label_to_int = {label: i for i, label in enumerate(unique_labels)}
+    human_classes_num = np.array([label_to_int[label] for label in human_classes])
+    print(unique_labels)
+    print(label_to_int)
+    
+    # PCA
+
+    pca = PCA(n_components=3)
+    X_pca = pca.fit_transform(vectors)
+    print(X_pca)
+
+    fig, axs = plt.subplots(1, 2, figsize=(25, 8))
+    
+    axs[0] = fig.add_subplot(1, 2, 1, projection='3d')
+    axs[1] = fig.add_subplot(1, 2, 2, projection='3d')
+
+
+    for ax in axs:
+        box = ax.get_position()
+        ax.set_position([box.x0, box.y0, box.width * 0.6, box.height * 0.6])
+
+    for ax in axs:
+        ax.set_frame_on(False)
+        ax.grid(False)
+        ax.xaxis.labelpad = 15  # Adjust the value to suit your needs
+        ax.yaxis.labelpad = 15
+        ax.zaxis.labelpad = 15
+    
+
+    title_fontsize = 24
+    label_fontsize = 16
+    legend_fontsize = 20
+
+    XX = [i[0] for i in X_pca]
+    XY = [i[1] for i in X_pca]
+    XZ = [i[2] for i in X_pca]
+    
+    #scatter1 = axs[0].scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.8, s=25, c=EC_classes, cmap='viridis')
+    scatter1 = axs[0].scatter(XX, XY, XZ, alpha=0.8, s=25, c=EC_classes, cmap='hsv')
+    axs[0].set_xlabel('PC 1', fontsize=label_fontsize)
+    axs[0].set_ylabel('PC 2', fontsize=label_fontsize)
+    axs[0].set_zlabel('PC 3', fontsize=label_fontsize)
+    axs[0].set_title('EC names', fontsize=title_fontsize)
+
+    #scatter2 = axs[1].scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.8, s=25, c=human_classes_num, cmap='viridis')
+    scatter2 = axs[1].scatter(XX, XY, zs=XZ, alpha=0.8, s=25, c=human_classes_num, cmap='hsv')
+    axs[1].set_xlabel('PC 1', fontsize=label_fontsize)
+    axs[1].set_ylabel('PC 2', fontsize=label_fontsize)
+    axs[1].set_zlabel('PC 3', fontsize=label_fontsize)
+    axs[1].set_title('Human names', fontsize=title_fontsize)
+
+    legend = axs[1].legend(handles=scatter2.legend_elements()[0], labels=unique_labels, title="", loc='center left', bbox_to_anchor=(1, 0.5), fontsize=legend_fontsize)
+
+    plt.subplots_adjust(wspace=0.3)  
+
+    plt.tight_layout()
+
+    plt.savefig(f'Plots/3000/random_init/EC_comm/PCA_EC_comm_u{utility}_a{informativeness}_c{complexity}.png', dpi=300, bbox_extra_artists=(legend,), bbox_inches='tight')
+
+    plt.show()
+
+
+    #nMDS
+    
+    #cos_similarities = cosine_similarity(vectors)
+    #dissimilarities = 1 - cos_similarities
+    
+    #nmds = manifold.MDS(
+    #    n_components=2,
+    #    metric=False,  # Indicates non-metric MDS
+    #    max_iter=1000,  # Adjust based on convergence
+    #    eps=1e-12,  # Tighter tolerance since nMDS can be more sensitive to this parameter
+    #    dissimilarity="precomputed",
+    #    random_state=seed,  # Define your seed for reproducibility
+    #    n_jobs=-1,  # Use all CPU cores for parallel computation
+    #    n_init=1,  # Number of times the algorithm will be run with different initializations
+    #)
+    #X_nmds = nmds.fit_transform(dissimilarities)
+
+
+    #fig, axs = plt.subplots(1, 2, figsize=(23, 8))
+
+    #for ax in axs:
+    #    box = ax.get_position()
+    #    ax.set_position([box.x0, box.y0, box.width * 0.75, box.height * 0.6])
+
+    #title_fontsize = 24
+    #label_fontsize = 18
+    #legend_fontsize = 20
+
+    #scatter1 = axs[0].scatter(X_nmds[:, 0], X_nmds[:, 1], alpha=0.8, s=25, c=EC_classes, cmap='viridis')
+    #axs[0].set_xlabel('Dimension 1', fontsize=label_fontsize)
+    #axs[0].set_ylabel('Dimension 2', fontsize=label_fontsize)
+    #axs[0].set_title('EC names', fontsize=title_fontsize)
+
+    #scatter2 = axs[1].scatter(X_nmds[:, 0], X_nmds[:, 1], alpha=0.8, s=25, c=human_classes_num, cmap='viridis')
+    #axs[1].set_xlabel('Dimension 1', fontsize=label_fontsize)
+    #axs[1].set_ylabel('Dimension 2', fontsize=label_fontsize)
+    #axs[1].set_title('Human names', fontsize=title_fontsize)
+
+    #legend = axs[1].legend(handles=scatter2.legend_elements()[0], labels=unique_labels, title="", loc='center left', bbox_to_anchor=(1, 0.5), fontsize=legend_fontsize)
+
+    #plt.subplots_adjust(wspace=0.3)  # Adjust this value as needed to create the desired gap
+    #plt.tight_layout()
+    
+    #plt.savefig(f'Plots/3000/random_init/EC_comm/nMDS_EC_comm_u{utility}_a{informativeness}_c{complexity}.png', dpi=300, bbox_extra_artists=(legend,), bbox_inches='tight')
+    
+    #plt.show()
 
 
 
@@ -199,7 +390,7 @@ if __name__ == '__main__':
     variational = True
     settings.num_protos = 3000 # 442 is the number of topnames in MN 
 
-    settings.random_init = False
+    settings.random_init = True
     random_init_dir = "random_init/" if settings.random_init else "anneal/"
 
     # Measuring complexity takes a lot of time. For debugging other features, set to false.
