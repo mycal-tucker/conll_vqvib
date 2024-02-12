@@ -191,8 +191,8 @@ def run():
     model.to(settings.device)
 
     complexity = 1.0
-    informativeness = 200
-    utility = 20
+    informativeness = 200 
+    utility = 0
     
     folder_utility = "utility" + str(utility) + "/"
     folder_alpha = "alpha" + str(informativeness) + "/"
@@ -200,6 +200,7 @@ def run():
     
     print(random_init_dir)
     model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'kl_weight' + str(complexity) + '/' + 'seed0/' + folder_utility + folder_alpha + "4999/"
+    #model_to_eval_path = 'src/saved_models/' + str(settings.num_protos) + '/' + random_init_dir + folder_ctx + 'missing/seed0/' + folder_utility + folder_alpha + folder_complexity + "4999/"
     model.load_state_dict(torch.load(model_to_eval_path + '/model.pt'))
     model.to(settings.device)
     model.eval()
@@ -228,10 +229,11 @@ def run():
     for i in most_prob_human_words:
         most_prob_images_per_word_humans.append(np.argsort(human_p_image_word[:, i].squeeze()).A1[-100:].tolist())
 
-    vectors, human_classes, EC_classes = [], [], []
+    vectors, human_classes, EC_classes, VG_id_list = [], [], [], []
     for n, ids in zip(most_prob_human_words, most_prob_images_per_word_humans):
         for j in ids:
             vg_image_id = vg_ids[j]
+            VG_id_list.append(vg_image_id)
             vectors.append(data.loc[data['vg_image_id'] == vg_image_id, 't_features'].tolist()[0])
             human_classes.append(ids_to_names[n])
             most_prob_EC = np.argmax(model_p_word_image[j, :].squeeze()).tolist()        
@@ -258,68 +260,128 @@ def run():
     #        EC_classes.append(num)
     #        print(n)
     
-
+    
     unique_labels = list(set(human_classes))
     label_to_int = {label: i for i, label in enumerate(unique_labels)}
     human_classes_num = np.array([label_to_int[label] for label in human_classes])
     print(unique_labels)
     print(label_to_int)
     
+    unique_labels_EC = list(set(EC_classes))
+    label_to_int_EC = {label: i for i, label in enumerate(unique_labels_EC)}
+    EC_classes_num = np.array([label_to_int_EC[label] for label in EC_classes])
+
+
     # PCA
 
     pca = PCA(n_components=3)
     X_pca = pca.fit_transform(vectors)
-    print(X_pca)
+    print(list(zip(VG_id_list, X_pca, human_classes)))
 
-    fig, axs = plt.subplots(1, 2, figsize=(25, 8))
+    #fig, axs = plt.subplots(1, 2, figsize=(26, 8)) 
+
+    #axs[0] = fig.add_subplot(1, 2, 1, projection='3d')
+    #axs[1] = fig.add_subplot(1, 2, 2, projection='3d')
     
-    axs[0] = fig.add_subplot(1, 2, 1, projection='3d')
-    axs[1] = fig.add_subplot(1, 2, 2, projection='3d')
+    #for ax in axs:
+    #    box = ax.get_position()
+    #    ax.set_position([box.x0, box.y0, box.width * 0.6, box.height * 0.6])
+
+    #for ax in axs:
+    #    ax.xaxis.labelpad = 15  # Adjust the value to suit your needs
+    #    ax.yaxis.labelpad = 15
+    #    ax.zaxis.labelpad = 15
 
 
-    for ax in axs:
-        box = ax.get_position()
-        ax.set_position([box.x0, box.y0, box.width * 0.6, box.height * 0.6])
-
-    for ax in axs:
-        ax.set_frame_on(False)
-        ax.grid(False)
-        ax.xaxis.labelpad = 15  # Adjust the value to suit your needs
-        ax.yaxis.labelpad = 15
-        ax.zaxis.labelpad = 15
+    fig = plt.figure(figsize=(15, 8))
+    ax = fig.add_subplot(111, projection='3d')
     
-
+    ax.xaxis.labelpad = 15  
+    ax.yaxis.labelpad = 15
+    ax.zaxis.labelpad = 15
+    
     title_fontsize = 24
     label_fontsize = 16
-    legend_fontsize = 20
+    legend_fontsize = 18
 
     XX = [i[0] for i in X_pca]
     XY = [i[1] for i in X_pca]
     XZ = [i[2] for i in X_pca]
     
-    #scatter1 = axs[0].scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.8, s=25, c=EC_classes, cmap='viridis')
-    scatter1 = axs[0].scatter(XX, XY, XZ, alpha=0.8, s=25, c=EC_classes, cmap='hsv')
-    axs[0].set_xlabel('PC 1', fontsize=label_fontsize)
-    axs[0].set_ylabel('PC 2', fontsize=label_fontsize)
-    axs[0].set_zlabel('PC 3', fontsize=label_fontsize)
-    axs[0].set_title('EC names', fontsize=title_fontsize)
+    scatter1 = ax.scatter(XX, XY, XZ, alpha=0.8, s=25, c=EC_classes_num, cmap='hsv')
+    ax.set_xlabel('PC 1', fontsize=label_fontsize)
+    ax.set_ylabel('PC 2', fontsize=label_fontsize)
+    ax.set_zlabel('PC 3', fontsize=label_fontsize)
+    #ax.set_title('EC names', fontsize=title_fontsize)
 
-    #scatter2 = axs[1].scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.8, s=25, c=human_classes_num, cmap='viridis')
-    scatter2 = axs[1].scatter(XX, XY, zs=XZ, alpha=0.8, s=25, c=human_classes_num, cmap='hsv')
-    axs[1].set_xlabel('PC 1', fontsize=label_fontsize)
-    axs[1].set_ylabel('PC 2', fontsize=label_fontsize)
-    axs[1].set_zlabel('PC 3', fontsize=label_fontsize)
-    axs[1].set_title('Human names', fontsize=title_fontsize)
-
-    legend = axs[1].legend(handles=scatter2.legend_elements()[0], labels=unique_labels, title="", loc='center left', bbox_to_anchor=(1, 0.5), fontsize=legend_fontsize)
-
-    plt.subplots_adjust(wspace=0.3)  
+    #legend = ax.legend(handles=scatter1.legend_elements()[0], labels=unique_labels_EC, title="", fontsize=legend_fontsize)
 
     plt.tight_layout()
 
-    plt.savefig(f'Plots/3000/random_init/EC_comm/PCA_EC_comm_u{utility}_a{informativeness}_c{complexity}.png', dpi=300, bbox_extra_artists=(legend,), bbox_inches='tight')
+    plt.savefig(f'Plots/3000/random_init/EC_comm/PCA_EC_comm_u{utility}_a{informativeness}_c{complexity}.png', dpi=300)
 
     plt.show()
+
+
+    # human
+    
+    fig = plt.figure(figsize=(15, 8))
+    
+    ax = fig.add_subplot(111, projection='3d')
+
+    ax.xaxis.labelpad = 15
+    ax.yaxis.labelpad = 15
+    ax.zaxis.labelpad = 15
+
+    title_fontsize = 24
+    label_fontsize = 16
+    legend_fontsize = 18
+
+    box = ax.get_position()
+    ax.set_position([box.x0, box.y0, box.width * 0.7, box.height * 0.7])
+
+    ax.xaxis.labelpad = 15
+    ax.yaxis.labelpad = 15
+    ax.zaxis.labelpad = 15
+
+    scatter2 = ax.scatter(XX, XY, XZ, alpha=0.8, s=25, c=human_classes_num, cmap='hsv')
+    ax.set_xlabel('PC 1', fontsize=label_fontsize)
+    ax.set_ylabel('PC 2', fontsize=label_fontsize)
+    ax.set_zlabel('PC 3', fontsize=label_fontsize)
+    #ax.set_title('Human names', fontsize=title_fontsize)
+
+    
+    legend = ax.legend(handles=scatter2.legend_elements()[0], labels=unique_labels, title="", loc='center left', bbox_to_anchor=(1.2, 0.5), fontsize=legend_fontsize)
+    
+    plt.tight_layout()
+
+    plt.savefig(f'Plots/3000/random_init/EC_comm/PCA_human_u{utility}_a{informativeness}_c{complexity}.png', dpi=300, bbox_extra_artists=(legend,), bbox_inches='tight')
+
+    plt.show()
+
+    #scatter1 = axs[0].scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.8, s=25, c=EC_classes, cmap='viridis')
+    #scatter1 = axs[0].scatter(XX, XY, XZ, alpha=0.8, s=25, c=EC_classes, cmap='hsv')
+    #axs[0].set_xlabel('PC 1', fontsize=label_fontsize)
+    #axs[0].set_ylabel('PC 2', fontsize=label_fontsize)
+    #axs[0].set_zlabel('PC 3', fontsize=label_fontsize)
+    #axs[0].set_title('EC names', fontsize=title_fontsize)
+
+    #scatter2 = axs[1].scatter(X_pca[:, 0], X_pca[:, 1], alpha=0.8, s=25, c=human_classes_num, cmap='viridis')
+    #scatter2 = axs[1].scatter(XX, XY, zs=XZ, alpha=0.8, s=25, c=human_classes_num, cmap='hsv')
+    #axs[1].set_xlabel('PC 1', fontsize=label_fontsize)
+    #axs[1].set_ylabel('PC 2', fontsize=label_fontsize)
+    #axs[1].set_zlabel('PC 3', fontsize=label_fontsize)
+    #axs[1].set_title('Human names', fontsize=title_fontsize)
+
+    #legend = axs[1].legend(handles=scatter2.legend_elements()[0], labels=unique_labels, title="", loc='center left', bbox_to_anchor=(1, 0.5), fontsize=legend_fontsize)
+
+    #plt.subplots_adjust(wspace=0.3)  
+
+    #plt.tight_layout()
+
+    #plt.savefig(f'Plots/3000/random_init/EC_comm/PCA_EC_comm_u{utility}_a{informativeness}_c{complexity}.png', dpi=300, bbox_extra_artists=(legend,), bbox_inches='tight')
+
+    #plt.show()
 
 
     #nMDS
